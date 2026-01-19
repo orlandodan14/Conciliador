@@ -53,6 +53,7 @@ type CombinedRow = {
   email: string | null;
 
   // solo para invites
+  invite_id?: string;
   invite_token?: string;
 };
 
@@ -66,7 +67,7 @@ export default function OnboardingEquipoPage() {
   const [invites, setInvites] = useState<InviteRow[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // modal
+  // modal INVITE (crear)
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [inviteCompanyId, setInviteCompanyId] = useState("");
@@ -74,9 +75,18 @@ export default function OnboardingEquipoPage() {
   const [inviteName, setInviteName] = useState("");
   const [inviteRole, setInviteRole] = useState<Role>("LECTOR");
 
-  // edit role inline
+  // edit role inline (members)
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [editRole, setEditRole] = useState<Role>("LECTOR");
+
+  // modal EDIT INVITE
+  const [editInviteOpen, setEditInviteOpen] = useState(false);
+  const [editInviteSaving, setEditInviteSaving] = useState(false);
+  const [editInviteId, setEditInviteId] = useState<string>("");
+  const [editInviteCompanyId, setEditInviteCompanyId] = useState<string>("");
+  const [editInviteEmail, setEditInviteEmail] = useState<string>("");
+  const [editInviteName, setEditInviteName] = useState<string>("");
+  const [editInviteRole, setEditInviteRole] = useState<Role>("LECTOR");
 
   // ======================
   // Load companies
@@ -173,8 +183,6 @@ export default function OnboardingEquipoPage() {
     setInvites((data ?? []) as InviteRow[]);
   };
 
-
-
   const loadAll = async (cid: string) => {
     await Promise.all([loadMembers(cid), loadInvites(cid)]);
   };
@@ -209,13 +217,14 @@ export default function OnboardingEquipoPage() {
       company_id: i.company_id,
       user_id: null,
       role: i.role,
-      status_ui: "INVITED", // 👈 en UI siempre INVITED mientras esté PENDING
+      status_ui: "INVITED",
       invited_at: i.created_at,
       accepted_at: i.accepted_at,
       created_at: i.created_at,
       updated_at: i.created_at,
       full_name: i.full_name,
       email: i.email,
+      invite_id: i.id,
       invite_token: i.token,
     }));
 
@@ -237,7 +246,21 @@ export default function OnboardingEquipoPage() {
   }, [inviteCompanyId, inviteEmail]);
 
   // ======================
-  // Invite (SIN Edge Function)
+  // Helper: enviar OTP con token
+  // ======================
+  const sendInviteEmailOtp = async (emailLower: string, tokenStr: string) => {
+    const redirectTo = `${window.location.origin}/auth/callback?invite_token=${encodeURIComponent(tokenStr)}`;
+
+    const { error: otpErr } = await supabase.auth.signInWithOtp({
+      email: emailLower,
+      options: { emailRedirectTo: redirectTo },
+    });
+
+    if (otpErr) throw otpErr;
+  };
+
+  // ======================
+  // Invite (crear)
   // - 1) Registramos invitación (team_invites)
   // - 2) Enviamos correo usando OTP (magic link)
   // ======================
@@ -262,8 +285,7 @@ export default function OnboardingEquipoPage() {
         return;
       }
 
-      const token =
-        (Array.isArray(rpcData) ? rpcData?.[0]?.token : rpcData?.token) ?? null;
+      const token = (Array.isArray(rpcData) ? rpcData?.[0]?.token : rpcData?.token) ?? null;
 
       if (!token) {
         console.log("RPC data sin token:", rpcData);
@@ -272,21 +294,17 @@ export default function OnboardingEquipoPage() {
       }
 
       const tokenStr = String(token);
-      const redirectTo = `${window.location.origin}/auth/callback?invite_token=${encodeURIComponent(tokenStr)}`;
 
       // 2) manda magic link
-      const { error: otpErr } = await supabase.auth.signInWithOtp({
-        email: emailLower,
-        options: { emailRedirectTo: redirectTo },
-      });
-
-      if (otpErr) {
+      try {
+        await sendInviteEmailOtp(emailLower, tokenStr);
+      } catch (otpErr: any) {
         console.log("OTP error:", otpErr);
-        alert(`Invitación registrada, pero no se pudo enviar el correo: ${otpErr.message}`);
+        alert(`Invitación registrada, pero no se pudo enviar el correo: ${otpErr?.message || "Error OTP"}`);
         return;
       }
 
-      // 3) refrescar UI (members + invites)
+      // 3) refrescar UI
       setOpen(false);
       setInviteEmail("");
       setInviteName("");
@@ -298,6 +316,130 @@ export default function OnboardingEquipoPage() {
       alert("✅ Invitación enviada. Le llegará un correo para crear su contraseña.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  // ======================
+  // INVITES: Reenviar (rota token + envía OTP)
+  // ======================
+  const onResendInvite = async (inviteId: string, email: string) => {
+    const ok = confirm(`¿Reenviar invitación a ${email}? (Se generará un link nuevo)`);
+    if (!ok) return;
+
+    try {
+      setLoading(true);
+
+      const { data: tokenData, error: tokenErr } = await supabase.rpc("rotate_team_invite_token", {
+        p_invite_id: inviteId,
+      });
+
+      if (tokenErr) {
+        alert(`No se pudo reenviar: ${tokenErr.message}`);
+        return;
+      }
+
+      const tokenStr = String(tokenData ?? "");
+      if (!tokenStr) {
+        alert("No se pudo reenviar: RPC no devolvió token.");
+        return;
+      }
+
+      const emailLower = email.trim().toLowerCase();
+      await sendInviteEmailOtp(emailLower, tokenStr);
+
+      await loadAll(companyId);
+      alert("✅ Invitación reenviada.");
+    } catch (e: any) {
+      alert(`No se pudo reenviar: ${e?.message || "Error"}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ======================
+  // INVITES: Abrir modal editar
+  // ======================
+  const openEditInviteModal = (r: CombinedRow) => {
+    if (!r.invite_id) return;
+
+    setEditInviteId(r.invite_id);
+    setEditInviteCompanyId(r.company_id);
+    setEditInviteEmail(r.email || "");
+    setEditInviteName(r.full_name || "");
+    setEditInviteRole(r.role);
+    setEditInviteOpen(true);
+  };
+
+  // ======================
+  // INVITES: Guardar cambios (opcional reenviar)
+  // ======================
+  const onSaveInviteEdits = async (resend: boolean) => {
+    if (!editInviteId) return;
+
+    const emailLower = editInviteEmail.trim().toLowerCase();
+    if (!emailLower) {
+      alert("Email requerido.");
+      return;
+    }
+
+    setEditInviteSaving(true);
+    try {
+      // rotamos token si vamos a reenviar (recomendado), o si cambiaste email igual conviene rotar
+      const rotateToken = true;
+
+      const { data: tokenData, error: updErr } = await supabase.rpc("update_team_invite", {
+        p_invite_id: editInviteId,
+        p_email: emailLower,
+        p_full_name: editInviteName.trim() || null,
+        p_role: editInviteRole,
+        p_rotate_token: rotateToken,
+      });
+
+      if (updErr) {
+        alert(`No se pudo actualizar: ${updErr.message}`);
+        return;
+      }
+
+      const tokenStr = String(tokenData ?? "");
+      if (!tokenStr) {
+        alert("Actualizado, pero no pude obtener token para reenviar.");
+        await loadAll(companyId);
+        setEditInviteOpen(false);
+        return;
+      }
+
+      if (resend) {
+        await sendInviteEmailOtp(emailLower, tokenStr);
+      }
+
+      await loadAll(companyId);
+      setEditInviteOpen(false);
+      alert(resend ? "✅ Invitación actualizada y reenviada." : "✅ Invitación actualizada.");
+    } catch (e: any) {
+      alert(`No se pudo guardar: ${e?.message || "Error"}`);
+    } finally {
+      setEditInviteSaving(false);
+    }
+  };
+
+  // ======================
+  // INVITES: Eliminar/Cancelar
+  // ======================
+  const onCancelInvite = async (inviteId: string, email: string) => {
+    const ok = confirm(`¿Eliminar (cancelar) invitación para ${email}?`);
+    if (!ok) return;
+
+    try {
+      setLoading(true);
+      const { error } = await supabase.rpc("cancel_team_invite", { p_invite_id: inviteId });
+      if (error) {
+        alert(`No se pudo cancelar: ${error.message}`);
+        return;
+      }
+      await loadAll(companyId);
+      alert("✅ Invitación cancelada.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -425,6 +567,10 @@ export default function OnboardingEquipoPage() {
               <div className="rounded-2xl bg-slate-50 p-4 text-[13px] text-slate-700 ring-1 ring-slate-200">
                 Selecciona una empresa.
               </div>
+            ) : loading ? (
+              <div className="rounded-2xl bg-slate-50 p-4 text-[13px] text-slate-700 ring-1 ring-slate-200">
+                Cargando…
+              </div>
             ) : rows.length === 0 ? (
               <div className="rounded-2xl bg-slate-50 p-4 text-[13px] text-slate-700 ring-1 ring-slate-200">
                 No hay miembros ni invitaciones todavía.
@@ -441,24 +587,21 @@ export default function OnboardingEquipoPage() {
                 <div className="divide-y divide-slate-200">
                   {rows.map((r) => {
                     const isMember = r.kind === "MEMBER";
+                    const isInvite = r.kind === "INVITE";
                     const isEditing = isMember && editingUserId === r.user_id;
 
                     return (
                       <div key={r.key} className="grid grid-cols-12 items-center px-4 py-3">
                         <div className="col-span-5">
                           <div className="text-[13px] font-extrabold text-slate-900">
-                            {r.full_name || (r.kind === "INVITE" ? "Invitado (pendiente)" : "Sin nombre")}
+                            {r.full_name || (isInvite ? "Invitado (pendiente)" : "Sin nombre")}
                           </div>
                           <div className="text-[12px] text-slate-600">{r.email || "Sin email"}</div>
                         </div>
 
                         <div className="col-span-2">
                           {isEditing ? (
-                            <select
-                              value={editRole}
-                              onChange={(e) => setEditRole(e.target.value as Role)}
-                              className={inputCls}
-                            >
+                            <select value={editRole} onChange={(e) => setEditRole(e.target.value as Role)} className={inputCls}>
                               <option value="OWNER">OWNER</option>
                               <option value="EDITOR">EDITOR</option>
                               <option value="LECTOR">LECTOR</option>
@@ -475,11 +618,33 @@ export default function OnboardingEquipoPage() {
                         </div>
 
                         <div className="col-span-3 flex justify-end gap-2">
-                          {!isMember ? (
-                            // 👇 INVITES: por ahora solo mostramos info (sin acciones)
-                            <span className="text-[12px] text-slate-500 font-bold">
-                              Pendiente de confirmación
-                            </span>
+                          {isInvite ? (
+                            <>
+                              <button
+                                onClick={() => onResendInvite(r.invite_id!, r.email || "")}
+                                className="h-9 rounded-xl bg-white px-3 text-[12px] font-extrabold text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50 cursor-pointer"
+                                disabled={!r.invite_id || !r.email}
+                                title="Reenvía el correo de invitación (link nuevo)"
+                              >
+                                Reenviar
+                              </button>
+
+                              <button
+                                onClick={() => openEditInviteModal(r)}
+                                className="h-9 rounded-xl bg-white px-3 text-[12px] font-extrabold text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50 cursor-pointer"
+                                disabled={!r.invite_id}
+                              >
+                                Editar
+                              </button>
+
+                              <button
+                                onClick={() => onCancelInvite(r.invite_id!, r.email || "")}
+                                className="h-9 rounded-xl bg-white px-3 text-[12px] font-extrabold text-red-700 ring-1 ring-slate-200 hover:bg-slate-50 cursor-pointer"
+                                disabled={!r.invite_id}
+                              >
+                                Eliminar
+                              </button>
+                            </>
                           ) : isEditing ? (
                             <>
                               <button
@@ -544,7 +709,7 @@ export default function OnboardingEquipoPage() {
         </div>
       </div>
 
-      {/* MODAL */}
+      {/* MODAL: CREAR INVITE */}
       {open && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
           <div className="w-full max-w-2xl overflow-hidden rounded-3xl bg-white ring-1 ring-slate-200 shadow-[0_25px_80px_rgba(0,0,0,0.35)]">
@@ -553,9 +718,7 @@ export default function OnboardingEquipoPage() {
                 <div>
                   <div className="text-[12px] font-extrabold uppercase text-white/80">Agregar miembro</div>
                   <div className="mt-1 text-xl font-black">Invitar y asignar rol</div>
-                  <div className="mt-2 text-[13px] text-white/85">
-                    Se enviará un correo (Magic Link). Luego podrá crear contraseña.
-                  </div>
+                  <div className="mt-2 text-[13px] text-white/85">Se enviará un correo (Magic Link). Luego podrá crear contraseña.</div>
                 </div>
                 <button
                   onClick={() => setOpen(false)}
@@ -600,12 +763,7 @@ export default function OnboardingEquipoPage() {
                 </Field>
 
                 <Field label="Nombre (opcional)">
-                  <input
-                    value={inviteName}
-                    onChange={(e) => setInviteName(e.target.value)}
-                    className={inputCls}
-                    placeholder="Nombre Apellido"
-                  />
+                  <input value={inviteName} onChange={(e) => setInviteName(e.target.value)} className={inputCls} placeholder="Nombre Apellido" />
                 </Field>
               </div>
 
@@ -627,6 +785,87 @@ export default function OnboardingEquipoPage() {
                   ].join(" ")}
                 >
                   {saving ? "Enviando…" : "Invitar y asignar →"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: EDIT INVITE */}
+      {editInviteOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
+          <div className="w-full max-w-2xl overflow-hidden rounded-3xl bg-white ring-1 ring-slate-200 shadow-[0_25px_80px_rgba(0,0,0,0.35)]">
+            <div className="bg-gradient-to-r from-[#0b2b4f] via-[#123b63] to-[#0b2b4f] px-6 py-5 text-white">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-[12px] font-extrabold uppercase text-white/80">Editar invitación</div>
+                  <div className="mt-1 text-xl font-black">Cambiar datos y reenviar</div>
+                  <div className="mt-2 text-[13px] text-white/85">Por seguridad se genera un link nuevo al guardar.</div>
+                </div>
+                <button
+                  onClick={() => setEditInviteOpen(false)}
+                  className="h-10 w-10 rounded-2xl bg-white/10 ring-1 ring-white/20 grid place-items-center hover:bg-white/15 cursor-pointer"
+                  aria-label="Cerrar"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6 space-y-5">
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label="Empresa">
+                  <input value={companies.find((c) => c.id === editInviteCompanyId)?.name || "—"} disabled className={inputCls} />
+                </Field>
+
+                <Field label="Rol *">
+                  <select value={editInviteRole} onChange={(e) => setEditInviteRole(e.target.value as Role)} className={inputCls}>
+                    <option value="OWNER">OWNER</option>
+                    <option value="EDITOR">EDITOR</option>
+                    <option value="LECTOR">LECTOR</option>
+                  </select>
+                </Field>
+
+                <Field label="Email *">
+                  <input
+                    value={editInviteEmail}
+                    onChange={(e) => setEditInviteEmail(e.target.value)}
+                    className={inputCls}
+                    placeholder="usuario@empresa.com"
+                    inputMode="email"
+                    autoComplete="email"
+                  />
+                </Field>
+
+                <Field label="Nombre (opcional)">
+                  <input value={editInviteName} onChange={(e) => setEditInviteName(e.target.value)} className={inputCls} placeholder="Nombre Apellido" />
+                </Field>
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setEditInviteOpen(false)}
+                  className="h-11 rounded-2xl bg-white ring-1 ring-slate-200 px-4 text-slate-900 font-extrabold text-[14px] hover:bg-slate-50 cursor-pointer"
+                  disabled={editInviteSaving}
+                >
+                  Cancelar
+                </button>
+
+                <button
+                  onClick={() => onSaveInviteEdits(false)}
+                  className="h-11 rounded-2xl bg-white ring-1 ring-slate-200 px-4 text-slate-900 font-extrabold text-[14px] hover:bg-slate-50 cursor-pointer"
+                  disabled={editInviteSaving}
+                >
+                  {editInviteSaving ? "Guardando…" : "Guardar"}
+                </button>
+
+                <button
+                  onClick={() => onSaveInviteEdits(true)}
+                  className="h-11 rounded-2xl bg-[#123b63] px-4 text-white font-extrabold text-[14px] hover:opacity-95 cursor-pointer"
+                  disabled={editInviteSaving}
+                >
+                  {editInviteSaving ? "Enviando…" : "Guardar y reenviar →"}
                 </button>
               </div>
             </div>
