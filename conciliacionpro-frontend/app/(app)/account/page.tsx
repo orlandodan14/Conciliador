@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation"; // ✅ nuevo
 import { supabase } from "@/lib/supabaseClient";
 
 /** ===================== TIPOS ===================== */
@@ -816,6 +817,21 @@ function InviteMemberModal({
 
 /* ===================== PAGE ===================== */
 export default function AccountSettingsPage() {
+  // helper: Enter o Space ejecuta acción (accesibilidad)
+  const router = useRouter();
+  const onEnterOrSpace =
+    (action: () => void) =>
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        action();
+      }
+    };
+
+  const goSelectCompany = () => {
+    router.push("/onboarding/select-company");
+  };
+  
   const [loading, setLoading] = useState(true);
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
@@ -1130,12 +1146,27 @@ export default function AccountSettingsPage() {
                 <div className="mt-1 text-white/70 text-xs truncate">
                   {userEmail ?? ""}
                 </div>
-                <button
-                  onClick={loadAll}
-                  className="mt-4 w-full h-10 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-white font-extrabold"
-                >
-                  Refrescar
-                </button>
+                <div className="mt-4 grid gap-2">
+                  <button
+                    onClick={loadAll}
+                    className="h-10 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-white font-extrabold"
+                    type="button"
+                  >
+                    Refrescar
+                  </button>
+
+                  {/* ✅ NUEVO: Ir a seleccionar empresa */}
+                  <button
+                    type="button"
+                    onClick={goSelectCompany}
+                    onKeyDown={onEnterOrSpace(goSelectCompany)}
+                    className="h-10 rounded-xl bg-emerald-300 text-slate-950 font-extrabold hover:opacity-95"
+                    title="Selecciona la empresa con la que vas a trabajar"
+                  >
+                    Volver →
+                  </button>
+                </div>
+
               </div>
             </div>
           </div>

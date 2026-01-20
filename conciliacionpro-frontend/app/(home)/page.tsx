@@ -3,22 +3,48 @@
 // Landing pública (sin AppShell) — explicada para gente no técnica
 // ============================================================================
 
-"use client";
+"use client"; // 👈 Indica que este componente se ejecuta en el navegador (necesario para eventos JS).
 
-import Link from "next/link";
+import Link from "next/link"; // 👈 Link de Next.js para navegación sin recargar la página.
 
+// ============================================================================
+// Componente principal: HomePage
+// ============================================================================
 export default function HomePage() {
+  // ----------------------------------------------------------------------------
+  // Helper: Hace que elementos tipo "botón" respondan a Enter o Space.
+  // - Lo usamos para <Link> y <a> para que el teclado funcione como botón real.
+  // - Enter y Space son las teclas más esperadas en accesibilidad.
+  // ----------------------------------------------------------------------------
+  const onEnterOrSpace =
+    (action: () => void) =>
+    (e: React.KeyboardEvent) => {
+      // Si presiona Enter o Space...
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault(); // Evita comportamientos raros (por ejemplo scroll con Space).
+        action(); // Ejecuta la acción (navegar o hacer click).
+      }
+    };
+
+  // ----------------------------------------------------------------------------
+  // Render principal de la landing
+  // ----------------------------------------------------------------------------
   return (
+    // main = contenedor principal de la página
     <main className="min-h-screen bg-slate-950 text-white">
       {/* --------------------------------------------------------------------
         FONDO DECORATIVO
-        - Solo visual: blobs difuminados + radial light
+        - Solo visual: “manchas/blobs” difuminados + luz radial
         - No afecta contenido, va detrás (-z-10)
       -------------------------------------------------------------------- */}
       <div className="absolute inset-0 -z-10 overflow-hidden">
+        {/* Blob superior centrado */}
         <div className="absolute -top-40 left-1/2 h-[520px] w-[900px] -translate-x-1/2 rounded-full bg-[#123b63]/35 blur-[120px]" />
+        {/* Blob derecha */}
         <div className="absolute top-40 right-[-120px] h-[420px] w-[420px] rounded-full bg-emerald-400/15 blur-[90px]" />
+        {/* Blob izquierda inferior */}
         <div className="absolute bottom-[-160px] left-[-120px] h-[520px] w-[520px] rounded-full bg-amber-400/10 blur-[110px]" />
+        {/* Luz radial encima de todo para dar “profundidad” */}
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_55%)]" />
       </div>
 
@@ -29,11 +55,16 @@ export default function HomePage() {
         - CTA principal: "Registrar mi empresa (1er paso)"
       -------------------------------------------------------------------- */}
       <header className="sticky top-0 z-50 mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-5 backdrop-blur bg-slate-950/80">
-        {/* Marca */}
+        {/* -----------------------------
+          Marca (logo + nombre)
+        ----------------------------- */}
         <div className="flex items-center gap-2">
+          {/* “Icono” cuadradito */}
           <div className="h-9 w-9 rounded-xl bg-white/10 ring-1 ring-white/15 grid place-items-center">
             <span className="text-lg">🏦</span>
           </div>
+
+          {/* Textos de marca */}
           <div>
             <div className="text-sm font-extrabold tracking-wide">Conciliador Pro</div>
             <div className="text-[11px] text-white/60 -mt-0.5">
@@ -42,27 +73,79 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Navegación de secciones (desktop) */}
+        {/* -----------------------------
+          Navegación por secciones (solo desktop)
+        ----------------------------- */}
         <nav className="hidden md:flex items-center gap-6 text-[13px] text-white/70">
-          <a href="#features" className="hover:text-white">Qué hace</a>
-          <a href="#modules" className="hover:text-white">Módulos</a>
-          <a href="#security" className="hover:text-white">Seguridad</a>
+          {/* Anclas internas: bajan a secciones */}
+          <a
+            href="#features"
+            className="hover:text-white"
+            role="button" // 👈 lo tratamos como botón para accesibilidad/teclado
+            tabIndex={0} // 👈 permite foco con Tab
+            onKeyDown={onEnterOrSpace(() => {
+              // Simula click al presionar Enter o Space
+              const el = document.querySelector('a[href="#features"]') as HTMLAnchorElement | null;
+              el?.click();
+            })}
+          >
+            Qué hace
+          </a>
+
+          <a
+            href="#modules"
+            className="hover:text-white"
+            role="button"
+            tabIndex={0}
+            onKeyDown={onEnterOrSpace(() => {
+              const el = document.querySelector('a[href="#modules"]') as HTMLAnchorElement | null;
+              el?.click();
+            })}
+          >
+            Módulos
+          </a>
+
+          <a
+            href="#security"
+            className="hover:text-white"
+            role="button"
+            tabIndex={0}
+            onKeyDown={onEnterOrSpace(() => {
+              const el = document.querySelector('a[href="#security"]') as HTMLAnchorElement | null;
+              el?.click();
+            })}
+          >
+            Seguridad
+          </a>
         </nav>
 
-        {/* CTA */}
+        {/* -----------------------------
+          CTAs (botones de acción)
+        ----------------------------- */}
         <div className="flex items-center gap-2">
-          {/* Nuevo: Ya tengo cuenta */}
+          {/* Link: Ya tengo cuenta */}
           <Link
             href="/login"
             className="rounded-xl bg-white/10 px-4 py-2 text-[13px] font-extrabold text-white/85 ring-1 ring-white/15 hover:bg-white/15"
+            role="button" // 👈 para que se sienta como botón
+            tabIndex={0} // 👈 permite foco
+            onKeyDown={onEnterOrSpace(() => {
+              // Navegación “manual” por teclado (por consistencia)
+              window.location.href = "/login";
+            })}
           >
             Ya tengo cuenta
           </Link>
 
-          {/* CTA principal */}
+          {/* Link: CTA principal */}
           <Link
             href="/registro-owner"
             className="rounded-xl bg-white px-4 py-2 text-[13px] font-extrabold text-slate-900 hover:opacity-95"
+            role="button"
+            tabIndex={0}
+            onKeyDown={onEnterOrSpace(() => {
+              window.location.href = "/registro-owner";
+            })}
           >
             Registrar mi empresa (1er paso)
           </Link>
@@ -76,16 +159,19 @@ export default function HomePage() {
         - Mini KPIs (ficticios) para dar sensación de valor
       -------------------------------------------------------------------- */}
       <section className="mx-auto w-full max-w-6xl px-4 pt-10 pb-8">
+        {/* Grilla 2 columnas en desktop */}
         <div className="grid gap-10 md:grid-cols-2 md:items-center">
-          {/* Columna izquierda: texto principal */}
+          {/* ============================================================
+             Columna izquierda: texto principal
+          ============================================================ */}
           <div>
-            {/* Tag/Badge */}
+            {/* Badge/etiqueta de contexto */}
             <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-[12px] text-white/80 ring-1 ring-white/15">
               <span>✅</span>
               <span>Para dueños y equipos sin experiencia contable</span>
             </div>
 
-            {/* Titular simple (evita jerga) */}
+            {/* Título principal */}
             <h1 className="mt-4 text-4xl font-black leading-tight tracking-tight md:text-5xl">
               Ordena tu negocio en minutos:
               <span className="text-emerald-300"> bancos</span>,{" "}
@@ -94,35 +180,49 @@ export default function HomePage() {
               <span className="text-white">contabilidad</span> en un solo lugar.
             </h1>
 
-            {/* Explicación en lenguaje “de calle” */}
+            {/* Texto explicativo */}
             <p className="mt-4 text-[15px] leading-relaxed text-white/70">
               Si hoy tienes “pagos por aquí”, “facturas por allá” y no sabes si todo cuadra,
               aquí lo ves claro. Conectas tu banco (o subes tu cartola), registras tus ventas
               y compras, y el sistema te guía para <b>cuadrar</b> todo paso a paso.
             </p>
 
-            {/* CTA + link de explicación */}
+            {/* CTAs del hero */}
             <div className="mt-6 flex flex-wrap items-center gap-3">
+              {/* CTA: registro */}
               <Link
                 href="/registro-owner"
                 className="rounded-2xl bg-[#ffffff] px-5 py-3 text-[13px] font-extrabold text-slate-900 hover:opacity-95"
+                role="button"
+                tabIndex={0}
+                onKeyDown={onEnterOrSpace(() => {
+                  window.location.href = "/registro-owner";
+                })}
               >
                 Registrar mi empresa (primer paso)
               </Link>
 
+              {/* CTA: bajar a “features” */}
               <a
                 href="#features"
                 className="rounded-2xl bg-white/10 px-5 py-3 text-[13px] font-bold text-white/85 ring-1 ring-white/15 hover:bg-white/15"
+                role="button"
+                tabIndex={0}
+                onKeyDown={onEnterOrSpace(() => {
+                  const el = document.querySelector('a[href="#features"]') as HTMLAnchorElement | null;
+                  el?.click();
+                })}
               >
                 Ver cómo funciona
               </a>
 
+              {/* Mensaje de apoyo */}
               <div className="text-[12px] text-white/60">
                 ✅ Claro y guiado • ✅ Sin tecnicismos • ✅ Control por empresa
               </div>
             </div>
 
-            {/* Mini KPIs (visual de valor; luego puedes poner datos reales) */}
+            {/* Mini KPIs (bloques visuales) */}
             <div className="mt-8 grid grid-cols-3 gap-3">
               <MiniKpi label="Tiempo" value="↓ 60%" desc="menos trabajo manual" />
               <MiniKpi label="Errores" value="↓ 80%" desc="menos descuadres" />
@@ -130,8 +230,11 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Columna derecha: tarjeta demo (simula un panel) */}
+          {/* ============================================================
+             Columna derecha: tarjeta demo (simula un panel)
+          ============================================================ */}
           <div className="rounded-3xl bg-white/8 p-5 ring-1 ring-white/15 shadow-[0_30px_90px_rgba(0,0,0,0.55)]">
+            {/* Header de la tarjeta */}
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-[12px] font-extrabold tracking-[0.12em] text-white/70">
@@ -140,11 +243,14 @@ export default function HomePage() {
                 <div className="mt-1 text-lg font-black">Panel Financiero</div>
                 <div className="text-[12px] text-white/60">Empresa Demo • CLP • Chile</div>
               </div>
+
+              {/* Badge “listo” */}
               <div className="rounded-2xl bg-emerald-300/15 px-3 py-2 text-[12px] font-extrabold text-emerald-200 ring-1 ring-emerald-200/20">
                 ✅ Listo para cuadrar
               </div>
             </div>
 
+            {/* Tarjetas pequeñas dentro del panel */}
             <div className="mt-4 grid grid-cols-2 gap-3">
               <Card title="Bancos" value="5" icon="🏦" desc="cartolas + alertas" />
               <Card title="Movimientos" value="1.245" icon="🧾" desc="importados" />
@@ -152,7 +258,7 @@ export default function HomePage() {
               <Card title="Conciliación" value="78%" icon="🔗" desc="auto + manual" />
             </div>
 
-            {/* Flujo explicado sin jerga */}
+            {/* Lista de pasos “cómo funciona” */}
             <div className="mt-4 rounded-2xl bg-black/20 p-4 ring-1 ring-white/10">
               <div className="text-[12px] font-extrabold text-white/80">Cómo funciona (simple)</div>
               <ol className="mt-2 space-y-2 text-[13px] text-white/70">
@@ -176,6 +282,7 @@ export default function HomePage() {
           Todo pensado para que cualquiera lo use: claro, guiado y con control.
         </p>
 
+        {/* Grid de features */}
         <div className="mt-6 grid gap-4 md:grid-cols-3">
           <Feature
             icon="🤖"
@@ -212,7 +319,7 @@ export default function HomePage() {
 
       {/* --------------------------------------------------------------------
         MODULES (Módulos)
-        - Aquí agregamos CONTABILIDAD como pediste
+        - Incluye CONTABILIDAD
       -------------------------------------------------------------------- */}
       <section id="modules" className="mx-auto w-full max-w-6xl px-4 py-10">
         <h2 className="text-2xl font-black">Módulos</h2>
@@ -220,6 +327,7 @@ export default function HomePage() {
           Activas lo que necesitas. Todo conversa entre sí.
         </p>
 
+        {/* Grid de módulos */}
         <div className="mt-6 grid gap-4 md:grid-cols-2">
           <Module
             title="Conciliación Bancaria"
@@ -248,7 +356,6 @@ export default function HomePage() {
               "Preparado para órdenes de compra/pago",
             ]}
           />
-          {/* ✅ NUEVO: CONTABILIDAD */}
           <Module
             title="Contabilidad"
             bullets={[
@@ -273,31 +380,27 @@ export default function HomePage() {
             permisos por rol, registro de acciones y datos separados por empresa.
           </p>
 
+          {/* Tarjetas de seguridad */}
           <div className="mt-5 grid gap-3 md:grid-cols-3">
-            <SecurityItem
-              title="Roles y permisos"
-              desc="Owner, Admin, Contabilidad, Operaciones, Lectura."
-              icon="🛡️"
-            />
-            <SecurityItem
-              title="Auditoría"
-              desc="Registro de acciones: conciliaciones, cambios, eliminaciones."
-              icon="🧷"
-            />
-            <SecurityItem
-              title="Multi-empresa"
-              desc="Datos aislados por empresa (según el modelo que definamos)."
-              icon="🏢"
-            />
+            <SecurityItem title="Roles y permisos" desc="Owner, Admin, Contabilidad, Operaciones, Lectura." icon="🛡️" />
+            <SecurityItem title="Auditoría" desc="Registro de acciones: conciliaciones, cambios, eliminaciones." icon="🧷" />
+            <SecurityItem title="Multi-empresa" desc="Datos aislados por empresa (según el modelo que definamos)." icon="🏢" />
           </div>
 
+          {/* CTA final */}
           <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
             <div className="text-[12px] text-white/60">
               Primer paso: crear el Owner (cuenta principal) → luego creas tu Empresa y configuras país/moneda.
             </div>
+
             <Link
               href="/registro-owner"
               className="rounded-2xl bg-emerald-300 px-5 py-3 text-[13px] font-extrabold text-slate-950 hover:opacity-95"
+              role="button"
+              tabIndex={0}
+              onKeyDown={onEnterOrSpace(() => {
+                window.location.href = "/registro-owner";
+              })}
             >
               Empezar: Registrar mi empresa
             </Link>
@@ -310,7 +413,9 @@ export default function HomePage() {
       -------------------------------------------------------------------- */}
       <footer className="mx-auto w-full max-w-6xl px-4 py-8 text-[12px] text-white/50">
         <div className="flex flex-wrap items-center justify-between gap-2">
+          {/* Año dinámico */}
           <div>© {new Date().getFullYear()} Conciliador Pro</div>
+          {/* Mensaje */}
           <div className="text-white/40">Hecho para operar finanzas sin estrés.</div>
         </div>
       </footer>
@@ -324,6 +429,10 @@ export default function HomePage() {
   - Después los podemos mover a /components si quieres.
 ============================================================================ */
 
+/**
+ * MiniKpi
+ * - Bloque pequeño para mostrar un indicador (visual)
+ */
 function MiniKpi({ label, value, desc }: { label: string; value: string; desc: string }) {
   return (
     <div className="rounded-2xl bg-white/8 p-3 ring-1 ring-white/10">
@@ -334,6 +443,10 @@ function MiniKpi({ label, value, desc }: { label: string; value: string; desc: s
   );
 }
 
+/**
+ * Card
+ * - Tarjetita dentro del panel demo
+ */
 function Card({ title, value, icon, desc }: { title: string; value: string; icon: string; desc: string }) {
   return (
     <div className="rounded-2xl bg-white/8 p-4 ring-1 ring-white/10">
@@ -347,6 +460,10 @@ function Card({ title, value, icon, desc }: { title: string; value: string; icon
   );
 }
 
+/**
+ * Feature
+ * - Caja de beneficios (icono + título + descripción)
+ */
 function Feature({ icon, title, desc }: { icon: string; title: string; desc: string }) {
   return (
     <div className="rounded-3xl bg-white/8 p-5 ring-1 ring-white/10 hover:bg-white/10 transition">
@@ -357,10 +474,16 @@ function Feature({ icon, title, desc }: { icon: string; title: string; desc: str
   );
 }
 
+/**
+ * Module
+ * - Caja que muestra un módulo y sus bullets
+ */
 function Module({ title, bullets }: { title: string; bullets: string[] }) {
   return (
     <div className="rounded-3xl bg-white/8 p-6 ring-1 ring-white/10">
       <div className="text-[16px] font-black">{title}</div>
+
+      {/* Lista de bullets */}
       <ul className="mt-3 space-y-2 text-[13px] text-white/70">
         {bullets.map((b) => (
           <li key={b} className="flex gap-2">
@@ -373,6 +496,10 @@ function Module({ title, bullets }: { title: string; bullets: string[] }) {
   );
 }
 
+/**
+ * SecurityItem
+ * - Item dentro de la sección de seguridad
+ */
 function SecurityItem({ icon, title, desc }: { icon: string; title: string; desc: string }) {
   return (
     <div className="rounded-2xl bg-black/20 p-4 ring-1 ring-white/10">
@@ -384,4 +511,3 @@ function SecurityItem({ icon, title, desc }: { icon: string; title: string; desc
     </div>
   );
 }
-
