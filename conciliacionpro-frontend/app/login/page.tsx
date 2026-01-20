@@ -78,7 +78,7 @@ export default function LoginPage() {
     const hasInvites = (invites?.length ?? 0) > 0;
 
     // ✅ Si ya hay miembros o ya hay invitaciones => onboarding “listo”
-    return hasOtherMember || hasInvites ? "/app" : "/onboarding";
+    return hasOtherMember || hasInvites ? "/onboarding/select-company" : "/onboarding";
   };
 
 

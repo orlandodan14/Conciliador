@@ -700,10 +700,10 @@ export default function OnboardingEquipoPage() {
 
           <div className="flex justify-end">
             <Link
-              href="/app"
+              href="/onboarding/select-company"
               className="h-11 rounded-2xl bg-[#123b63] px-4 text-white font-extrabold text-[14px] grid place-items-center hover:opacity-95 cursor-pointer"
             >
-              Ir al dashboard →
+              Finalizar Onboarding →
             </Link>
           </div>
         </div>

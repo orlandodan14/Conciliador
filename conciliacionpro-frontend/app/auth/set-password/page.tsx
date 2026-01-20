@@ -49,7 +49,7 @@ export default function SetPasswordPage() {
       }
 
       // 4) dashboard
-      router.replace("/app");
+      router.replace("/onboarding/select-company");
     } finally {
       setLoading(false);
     }
