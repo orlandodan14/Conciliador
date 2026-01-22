@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
-import Header from "@/components/Header";
+import Header from "@/app/(app)/components/Header";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();

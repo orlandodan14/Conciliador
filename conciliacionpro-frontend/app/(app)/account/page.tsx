@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation"; // ✅ nuevo
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
 /** ===================== TIPOS ===================== */
@@ -26,8 +26,23 @@ type TeamMemberRowRaw = {
   status: Status;
 };
 
+/** ✅ CAMBIO: agregamos profile_email */
 type TeamMemberRow = TeamMemberRowRaw & {
   profile_full_name: string | null;
+  profile_email: string | null;
+};
+
+/** ✅ INVITES (team_invites) */
+type InviteRow = {
+  id: string;
+  company_id: string;
+  email: string;
+  full_name: string | null;
+  role: Role;
+  status: string; // normalmente "INVITED"
+  created_at: string;
+  accepted_at: string | null;
+  token: string;
 };
 
 /** ===================== HELPERS ===================== */
@@ -132,9 +147,7 @@ function ModalShell({
           </div>
 
           {/* body scroll */}
-          <div className="max-h-[72vh] overflow-auto px-8 py-6">
-            {children}
-          </div>
+          <div className="max-h-[72vh] overflow-auto px-8 py-6">{children}</div>
         </div>
       </div>
     </div>
@@ -159,23 +172,21 @@ const CURRENCIES: { key: CurrencyKey; label: string }[] = [
 ];
 
 // MVP: opciones básicas (si ya tienes el REGIONS_BY_COUNTRY real en onboarding, pega el tuyo)
-const REGIONS_BY_COUNTRY: Record<
-  CountryKey,
-  { label: string; options: string[] }
-> = {
-  CL: {
-    label: "Región",
-    options: ["Región Metropolitana (MVP)"],
-  },
-  MX: {
-    label: "Estado",
-    options: ["CDMX (MVP)"],
-  },
-  ES: {
-    label: "Provincia",
-    options: ["Madrid (MVP)"],
-  },
-};
+const REGIONS_BY_COUNTRY: Record<CountryKey, { label: string; options: string[] }> =
+  {
+    CL: {
+      label: "Región",
+      options: ["Región Metropolitana (MVP)"],
+    },
+    MX: {
+      label: "Estado",
+      options: ["CDMX (MVP)"],
+    },
+    ES: {
+      label: "Provincia",
+      options: ["Madrid (MVP)"],
+    },
+  };
 
 const inputCls =
   "h-11 w-full rounded-2xl bg-white ring-1 ring-slate-200 px-4 text-slate-900 outline-none placeholder:text-slate-400 focus:ring-2 focus:ring-[rgba(95,177,255,0.25)]";
@@ -195,12 +206,8 @@ function Section({
     <div className="rounded-3xl bg-white ring-1 ring-slate-200 p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="text-slate-900 font-extrabold tracking-wide">
-            {title}
-          </div>
-          {subtitle ? (
-            <div className="mt-1 text-sm text-slate-600">{subtitle}</div>
-          ) : null}
+          <div className="text-slate-900 font-extrabold tracking-wide">{title}</div>
+          {subtitle ? <div className="mt-1 text-sm text-slate-600">{subtitle}</div> : null}
         </div>
         {right ? <div>{right}</div> : null}
       </div>
@@ -312,9 +319,7 @@ function EmpresaFormModal({
 
       const { data, error } = await supabase
         .from("companies")
-        .select(
-          "id,name,country,fiscal_id,contact_email,trade_name,currency,billing_address"
-        )
+        .select("id,name,country,fiscal_id,contact_email,trade_name,currency,billing_address")
         .eq("id", companyId as string)
         .maybeSingle();
 
@@ -369,16 +374,7 @@ function EmpresaFormModal({
       if (!streetNumber.trim()) return false;
     }
     return true;
-  }, [
-    companyName,
-    contactEmail,
-    fiscalId,
-    useBillingAddress,
-    region,
-    city,
-    street,
-    streetNumber,
-  ]);
+  }, [companyName, contactEmail, fiscalId, useBillingAddress, region, city, street, streetNumber]);
 
   const onSave = async () => {
     if (!canContinue || saving) return;
@@ -395,36 +391,23 @@ function EmpresaFormModal({
       }
 
       const billing_address = useBillingAddress
-        ? {
-            country,
-            region,
-            city,
-            street,
-            street_number: streetNumber,
-            unit,
-            postal_code: postalCode,
-          }
+        ? { country, region, city, street, street_number: streetNumber, unit, postal_code: postalCode }
         : null;
 
       // CREATE (RPC recomendado)
       if (!isEdit) {
-        const { data: companyIdCreated, error: rpcErr } = await supabase.rpc(
-          "create_company_with_owner",
-          {
-            p_name: companyName.trim(),
-            p_country: country,
-            p_fiscal_id: fiscalId.trim(),
-            p_contact_email: contactEmail.trim(),
-            p_trade_name: tradeName.trim() || null,
-            p_currency: currency,
-            p_billing_address: billing_address,
-          }
-        );
+        const { data: companyIdCreated, error: rpcErr } = await supabase.rpc("create_company_with_owner", {
+          p_name: companyName.trim(),
+          p_country: country,
+          p_fiscal_id: fiscalId.trim(),
+          p_contact_email: contactEmail.trim(),
+          p_trade_name: tradeName.trim() || null,
+          p_currency: currency,
+          p_billing_address: billing_address,
+        });
 
         if (rpcErr || !companyIdCreated) {
-          setErrorMsg(
-            `No se pudo guardar: ${rpcErr?.message ?? "sin mensaje"}`
-          );
+          setErrorMsg(`No se pudo guardar: ${rpcErr?.message ?? "sin mensaje"}`);
           return;
         }
 
@@ -467,10 +450,7 @@ function EmpresaFormModal({
         </div>
       ) : null}
 
-      <Section
-        title="Datos principales"
-        subtitle="Lo mínimo para empezar. Puedes editarlo después."
-      >
+      <Section title="Datos principales" subtitle="Lo mínimo para empezar. Puedes editarlo después.">
         <Grid>
           <Field label="Nombre de la empresa *" hint="Ej: Comunidad Feliz SpA">
             <input
@@ -481,10 +461,7 @@ function EmpresaFormModal({
             />
           </Field>
 
-          <Field
-            label="País *"
-            hint="🔒 Esto fija reglas futuras (impuestos, formatos, regiones)."
-          >
+          <Field label="País *" hint="🔒 Esto fija reglas futuras (impuestos, formatos, regiones).">
             <select
               value={country}
               onChange={(e) => {
@@ -512,9 +489,7 @@ function EmpresaFormModal({
           </Field>
 
           <Field
-            label={`ID fiscal * (${
-              country === "CL" ? "RUT" : country === "MX" ? "RFC" : "NIF/CIF"
-            })`}
+            label={`ID fiscal * (${country === "CL" ? "RUT" : country === "MX" ? "RFC" : "NIF/CIF"})`}
             hint="Se usa en documentos y facturación."
           >
             <input
@@ -542,10 +517,7 @@ function EmpresaFormModal({
             />
           </Field>
 
-          <Field
-            label="Nombre comercial (opcional)"
-            hint="Ej: 'Empresa XYZ' (marca)."
-          >
+          <Field label="Nombre comercial (opcional)" hint="Ej: 'Empresa XYZ' (marca).">
             <input
               value={tradeName}
               onChange={(e) => setTradeName(e.target.value)}
@@ -554,15 +526,8 @@ function EmpresaFormModal({
             />
           </Field>
 
-          <Field
-            label="Moneda de visualización *"
-            hint="En qué moneda se mostrarán montos y reportes."
-          >
-            <select
-              value={currency}
-              onChange={(e) => setCurrency(e.target.value as CurrencyKey)}
-              className={inputCls}
-            >
+          <Field label="Moneda de visualización *" hint="En qué moneda se mostrarán montos y reportes.">
+            <select value={currency} onChange={(e) => setCurrency(e.target.value as CurrencyKey)} className={inputCls}>
               {CURRENCIES.map((c) => (
                 <option key={c.key} value={c.key}>
                   {c.label}
@@ -596,11 +561,7 @@ function EmpresaFormModal({
           <div className="space-y-4">
             <Grid>
               <Field label={`${regionMeta.label} *`} hint="Depende del país seleccionado.">
-                <select
-                  value={region}
-                  onChange={(e) => setRegion(e.target.value)}
-                  className={inputCls}
-                >
+                <select value={region} onChange={(e) => setRegion(e.target.value)} className={inputCls}>
                   <option value="">Selecciona…</option>
                   {regionMeta.options.map((opt) => (
                     <option key={opt} value={opt}>
@@ -610,55 +571,24 @@ function EmpresaFormModal({
                 </select>
               </Field>
 
-              <Field
-                label={country === "CL" ? "Ciudad / Comuna *" : "Ciudad / Municipio *"}
-                hint="Puedes escribir directo (MVP)."
-              >
-                <input
-                  value={city}
-                  onChange={(e) => setCity(e.target.value)}
-                  className={inputCls}
-                  placeholder="Ej: Las Condes"
-                />
+              <Field label={country === "CL" ? "Ciudad / Comuna *" : "Ciudad / Municipio *"} hint="Puedes escribir directo (MVP).">
+                <input value={city} onChange={(e) => setCity(e.target.value)} className={inputCls} placeholder="Ej: Las Condes" />
               </Field>
 
               <Field label="Calle / Avenida *" hint="Ej: Av. Apoquindo">
-                <input
-                  value={street}
-                  onChange={(e) => setStreet(e.target.value)}
-                  className={inputCls}
-                  placeholder="Ej: Av. Apoquindo"
-                />
+                <input value={street} onChange={(e) => setStreet(e.target.value)} className={inputCls} placeholder="Ej: Av. Apoquindo" />
               </Field>
 
               <Field label="Número *" hint="Permite letras: 123B">
-                <input
-                  value={streetNumber}
-                  onChange={(e) => setStreetNumber(e.target.value)}
-                  className={inputCls}
-                  placeholder="Ej: 4501"
-                />
+                <input value={streetNumber} onChange={(e) => setStreetNumber(e.target.value)} className={inputCls} placeholder="Ej: 4501" />
               </Field>
 
-              <Field
-                label="Departamento / Oficina / Interior (opcional)"
-                hint="Ej: Of. 1203"
-              >
-                <input
-                  value={unit}
-                  onChange={(e) => setUnit(e.target.value)}
-                  className={inputCls}
-                  placeholder="Ej: Of. 1203"
-                />
+              <Field label="Departamento / Oficina / Interior (opcional)" hint="Ej: Of. 1203">
+                <input value={unit} onChange={(e) => setUnit(e.target.value)} className={inputCls} placeholder="Ej: Of. 1203" />
               </Field>
 
               <Field label="Código postal (opcional)" hint="Depende del país">
-                <input
-                  value={postalCode}
-                  onChange={(e) => setPostalCode(e.target.value)}
-                  className={inputCls}
-                  placeholder="Ej: 7550000"
-                />
+                <input value={postalCode} onChange={(e) => setPostalCode(e.target.value)} className={inputCls} placeholder="Ej: 7550000" />
               </Field>
             </Grid>
 
@@ -674,9 +604,7 @@ function EmpresaFormModal({
       </Section>
 
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-        <div className="text-[12px] text-slate-500">
-          * Campos obligatorios. Te tomará menos de 2 minutos.
-        </div>
+        <div className="text-[12px] text-slate-500">* Campos obligatorios. Te tomará menos de 2 minutos.</div>
 
         <div className="flex gap-2">
           <button
@@ -706,8 +634,7 @@ function EmpresaFormModal({
       <div className="rounded-2xl bg-[#0b2b4f] p-4 text-[12px] text-white/90">
         <div className="font-extrabold">🔐 Multi-tenant (sin cruce de información)</div>
         <div className="mt-1 text-white/80">
-          Todo quedará asociado a esta empresa (tenant). Luego, cada tabla llevará{" "}
-          <b>company_id</b> y RLS impedirá ver datos de otra empresa.
+          Todo quedará asociado a esta empresa (tenant). Luego, cada tabla llevará <b>company_id</b> y RLS impedirá ver datos de otra empresa.
         </div>
       </div>
     </div>
@@ -742,13 +669,12 @@ function InviteMemberModal({
     <ModalShell
       open={open}
       title="Invitar miembro"
-      subtitle="El usuario quedará como INVITED hasta que acepte."
+      subtitle="Se enviará un correo (Magic Link). Quedará como INVITED hasta que acepte."
       onClose={onClose}
     >
       <div className="space-y-4">
         <div className="rounded-2xl bg-slate-50 p-4 text-[13px] text-slate-700 ring-1 ring-slate-200">
-          Consejo: si necesitas “cambiar correo”, lo correcto es{" "}
-          <b>eliminar + reinvitar</b> (no se puede editar el email del auth user desde el cliente).
+          Consejo: si necesitas “cambiar correo”, lo correcto es <b>eliminar + reinvitar</b>.
         </div>
 
         <div className="space-y-2">
@@ -763,9 +689,7 @@ function InviteMemberModal({
         </div>
 
         <div className="space-y-2">
-          <div className="text-[12px] font-extrabold text-slate-700">
-            Nombre (opcional)
-          </div>
+          <div className="text-[12px] font-extrabold text-slate-700">Nombre (opcional)</div>
           <input
             className={inputCls}
             placeholder="Ej: Juan Pérez"
@@ -776,11 +700,7 @@ function InviteMemberModal({
 
         <div className="space-y-2">
           <div className="text-[12px] font-extrabold text-slate-700">Rol</div>
-          <select
-            className={inputCls}
-            value={inviteRole}
-            onChange={(e) => setInviteRole(e.target.value as Role)}
-          >
+          <select className={inputCls} value={inviteRole} onChange={(e) => setInviteRole(e.target.value as Role)}>
             <option value="OWNER">OWNER</option>
             <option value="EDITOR">EDITOR</option>
             <option value="LECTOR">LECTOR</option>
@@ -801,9 +721,7 @@ function InviteMemberModal({
             onClick={onInvite}
             className={cls(
               "h-11 rounded-2xl px-4 text-[14px] font-extrabold transition",
-              inviting
-                ? "bg-slate-200 text-slate-500 cursor-not-allowed"
-                : "bg-[#5fb1ff] text-[#0b2b4f] hover:brightness-105 cursor-pointer"
+              inviting ? "bg-slate-200 text-slate-500 cursor-not-allowed" : "bg-[#5fb1ff] text-[#0b2b4f] hover:brightness-105 cursor-pointer"
             )}
             disabled={inviting}
           >
@@ -817,8 +735,9 @@ function InviteMemberModal({
 
 /* ===================== PAGE ===================== */
 export default function AccountSettingsPage() {
-  // helper: Enter o Space ejecuta acción (accesibilidad)
   const router = useRouter();
+
+  // helper: Enter o Space ejecuta acción (accesibilidad)
   const onEnterOrSpace =
     (action: () => void) =>
     (e: React.KeyboardEvent) => {
@@ -831,7 +750,7 @@ export default function AccountSettingsPage() {
   const goSelectCompany = () => {
     router.push("/onboarding/select-company");
   };
-  
+
   const [loading, setLoading] = useState(true);
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
@@ -845,21 +764,18 @@ export default function AccountSettingsPage() {
 
   // Empresas
   const [memberships, setMemberships] = useState<MyCompanyMembershipRow[]>([]);
-  const [expandedCompanyId, setExpandedCompanyId] = useState<string | null>(
-    null
-  );
-  const [teamByCompany, setTeamByCompany] = useState<
-    Record<string, TeamMemberRow[]>
-  >({});
+  const [expandedCompanyId, setExpandedCompanyId] = useState<string | null>(null);
+  const [teamByCompany, setTeamByCompany] = useState<Record<string, TeamMemberRow[]>>({});
+
+  /** ✅ INVITES por empresa */
+  const [invitesByCompany, setInvitesByCompany] = useState<Record<string, InviteRow[]>>({});
 
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   // Modal empresa (create/edit)
   const [openCompanyModal, setOpenCompanyModal] = useState(false);
-  const [companyModalMode, setCompanyModalMode] = useState<"create" | "edit">(
-    "create"
-  );
+  const [companyModalMode, setCompanyModalMode] = useState<"create" | "edit">("create");
   const [companyModalId, setCompanyModalId] = useState<string | null>(null);
 
   // Modal invitar
@@ -895,11 +811,7 @@ export default function AccountSettingsPage() {
     const uid = authData.user.id;
     setUserEmail(authData.user.email ?? null);
 
-    const { data: p, error: pErr } = await supabase
-      .from("profiles")
-      .select("id, full_name")
-      .eq("id", uid)
-      .single();
+    const { data: p, error: pErr } = await supabase.from("profiles").select("id, full_name").eq("id", uid).single();
 
     if (pErr) {
       setErr(`Error cargando perfil: ${pErr.message}`);
@@ -927,11 +839,7 @@ export default function AccountSettingsPage() {
   }
 
   /**
-   * ✅ FIX: sin FK no podemos hacer "profiles:profiles(...)"
-   * Entonces:
-   * 1) traemos company_members
-   * 2) traemos profiles WHERE id IN (user_ids)
-   * 3) merge
+   * ✅ TEAM: members + profiles (nombre/email)
    */
   async function loadTeam(companyId: string) {
     setErr(null);
@@ -956,32 +864,59 @@ export default function AccountSettingsPage() {
       return;
     }
 
-    // Traer profiles
-    const { data: ps, error: psErr } = await supabase
-      .from("profiles")
-      .select("id, full_name")
-      .in("id", userIds);
+    // profiles con email (si existe en tu tabla)
+    const { data: ps, error: psErr } = await supabase.from("profiles").select("id, full_name, email").in("id", userIds);
 
     if (psErr) {
-      // Si por RLS no puede leer perfiles, al menos mostramos la lista sin nombres
       const mergedFallback: TeamMemberRow[] = rows.map((r) => ({
         ...r,
         profile_full_name: null,
+        profile_email: null,
       }));
       setTeamByCompany((prev) => ({ ...prev, [companyId]: mergedFallback }));
       setErr(`Equipo cargado, pero no pude leer perfiles: ${psErr.message}`);
       return;
     }
 
-    const map = new Map<string, string | null>();
-    (ps ?? []).forEach((p: any) => map.set(p.id, p.full_name ?? null));
+    const map = new Map<string, { full_name: string | null; email: string | null }>();
+    (ps ?? []).forEach((p: any) => map.set(p.id, { full_name: p.full_name ?? null, email: p.email ?? null }));
 
-    const merged: TeamMemberRow[] = rows.map((r) => ({
-      ...r,
-      profile_full_name: map.get(r.user_id) ?? null,
-    }));
+    const merged: TeamMemberRow[] = rows.map((r) => {
+      const prof = map.get(r.user_id);
+      return {
+        ...r,
+        profile_full_name: prof?.full_name ?? null,
+        profile_email: prof?.email ?? null,
+      };
+    });
 
     setTeamByCompany((prev) => ({ ...prev, [companyId]: merged }));
+  }
+
+  /**
+   * ✅ INVITES: team_invites (status INVITED)
+   */
+  async function loadInvites(companyId: string) {
+    setErr(null);
+
+    const { data, error } = await supabase
+      .from("team_invites")
+      .select("id,company_id,email,full_name,role,status,created_at,accepted_at,token")
+      .eq("company_id", companyId)
+      .eq("status", "INVITED")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      // no matamos la pantalla, solo mostramos sin invites
+      setInvitesByCompany((prev) => ({ ...prev, [companyId]: [] }));
+      return;
+    }
+
+    setInvitesByCompany((prev) => ({ ...prev, [companyId]: (data ?? []) as InviteRow[] }));
+  }
+
+  async function loadCompanyPeople(companyId: string) {
+    await Promise.all([loadTeam(companyId), loadInvites(companyId)]);
   }
 
   useEffect(() => {
@@ -997,29 +932,16 @@ export default function AccountSettingsPage() {
     const clean = fullName.trim();
 
     // 1) Profiles (fuente de verdad)
-    const { error: pErr } = await supabase
-      .from("profiles")
-      .update({ full_name: clean || null })
-      .eq("id", profile.id);
-
+    const { error: pErr } = await supabase.from("profiles").update({ full_name: clean || null }).eq("id", profile.id);
     if (pErr) return setErr(`No se pudo actualizar el nombre: ${pErr.message}`);
 
-    // 2) Auth metadata (opcional, pero recomendado)
-    const { error: aErr } = await supabase.auth.updateUser({
-      data: { full_name: clean || null },
-    });
+    // 2) Auth metadata (opcional)
+    const { error: aErr } = await supabase.auth.updateUser({ data: { full_name: clean || null } });
+    if (aErr) setMsg("Nombre actualizado (pero no pude sincronizarlo con Auth).");
+    else setMsg("Nombre actualizado.");
 
-    // Si falla metadata, NO rompas la app (profiles ya quedó bien)
-    if (aErr) {
-      setMsg("Nombre actualizado (pero no pude sincronizarlo con Auth).");
-    } else {
-      setMsg("Nombre actualizado.");
-    }
-
-    // Dispara refresh del header si quieres instantáneo
     window.dispatchEvent(new CustomEvent("profile:updated"));
   }
-
 
   async function onChangePassword() {
     setErr(null);
@@ -1030,10 +952,7 @@ export default function AccountSettingsPage() {
     if (newPass !== confirmPass) return setErr("La nueva contraseña y la confirmación no coinciden.");
     if (newPass.length < 8) return setErr("La nueva contraseña debe tener al menos 8 caracteres.");
 
-    const { error: reErr } = await supabase.auth.signInWithPassword({
-      email: userEmail,
-      password: currentPass,
-    });
+    const { error: reErr } = await supabase.auth.signInWithPassword({ email: userEmail, password: currentPass });
     if (reErr) return setErr("Contraseña actual incorrecta.");
 
     const { error: upErr } = await supabase.auth.updateUser({ password: newPass });
@@ -1059,7 +978,7 @@ export default function AccountSettingsPage() {
     if (error) return setErr(`No se pudo eliminar el miembro: ${error.message}`);
 
     setMsg("Miembro eliminado.");
-    await loadTeam(companyId);
+    await loadCompanyPeople(companyId);
   }
 
   async function onOwnerUpdateMember(companyId: string, userId: string, role: Role, status: Status) {
@@ -1075,43 +994,131 @@ export default function AccountSettingsPage() {
     if (error) return setErr(`No se pudo actualizar el miembro: ${error.message}`);
 
     setMsg("Miembro actualizado.");
-    await loadTeam(companyId);
+    await loadCompanyPeople(companyId);
   }
 
-  // ======= Invitar miembro (modal) =======
+  // ======================
+  // Helper: enviar OTP con token (misma lógica que Equipo)
+  // ======================
+  const sendInviteEmailOtp = async (emailLower: string, tokenStr: string) => {
+    const redirectTo = `${window.location.origin}/auth/callback?invite_token=${encodeURIComponent(tokenStr)}`;
+    const { error: otpErr } = await supabase.auth.signInWithOtp({
+      email: emailLower,
+      options: { emailRedirectTo: redirectTo },
+    });
+    if (otpErr) throw otpErr;
+  };
+
+  // ======================
+  // INVITAR (Account): registra invite + envía correo (OTP)
+  // ======================
   async function onInviteMember() {
     setErr(null);
     setMsg(null);
 
     if (!inviteCompanyId) return;
-    if (!canManageCompany(inviteCompanyId))
-      return setErr("No autorizado (requiere OWNER ACTIVE).");
+    if (!canManageCompany(inviteCompanyId)) return setErr("No autorizado (requiere OWNER ACTIVE).");
 
     const email = inviteEmail.trim().toLowerCase();
     if (!email || !email.includes("@")) return setErr("Ingresa un email válido.");
 
     setInviting(true);
     try {
-      const { error } = await supabase.rpc("invite_member_by_email", {
+      // 1) crear invitación y obtener token (igual Equipo)
+      const { data: rpcData, error: rpcErr } = await supabase.rpc("invite_member_by_email", {
         p_company_id: inviteCompanyId,
         p_email: email,
         p_full_name: inviteFullName.trim() || null,
         p_role: inviteRole,
       });
 
-      if (error) return setErr(`No se pudo invitar: ${error.message}`);
+      if (rpcErr) return setErr(`No se pudo invitar: ${rpcErr.message}`);
+
+      const token = (Array.isArray(rpcData) ? (rpcData as any)?.[0]?.token : (rpcData as any)?.token) ?? null;
+      if (!token) return setErr("Invitación registrada, pero no pude obtener el token (RPC no devolvió token).");
+
+      // 2) enviar magic link
+      try {
+        await sendInviteEmailOtp(email, String(token));
+      } catch (otpErr: any) {
+        return setErr(`Invitación registrada, pero no se pudo enviar el correo: ${otpErr?.message || "Error OTP"}`);
+      }
 
       const cid = inviteCompanyId;
 
+      // limpiar modal
       setInviteEmail("");
       setInviteFullName("");
       setInviteRole("LECTOR");
       setInviteCompanyId(null);
 
-      setMsg("Invitación enviada.");
-      await loadTeam(cid);
+      setMsg("Invitación enviada (correo enviado).");
+      await loadCompanyPeople(cid);
     } finally {
       setInviting(false);
+    }
+  }
+
+  // ======================
+  // INVITES: Reenviar (rota token + envía OTP)
+  // ======================
+  async function onResendInvite(companyId: string, inviteId: string, email: string) {
+    setErr(null);
+    setMsg(null);
+
+    const ok = window.confirm(`¿Reenviar invitación a ${email}? (Se generará un link nuevo)`);
+    if (!ok) return;
+
+    try {
+      setLoading(true);
+
+      const { data: tokenData, error: tokenErr } = await supabase.rpc("rotate_team_invite_token", {
+        p_invite_id: inviteId,
+      });
+
+      if (tokenErr) {
+        setErr(`No se pudo reenviar: ${tokenErr.message}`);
+        return;
+      }
+
+      const tokenStr = String(tokenData ?? "");
+      if (!tokenStr) {
+        setErr("No se pudo reenviar: RPC no devolvió token.");
+        return;
+      }
+
+      await sendInviteEmailOtp(email.trim().toLowerCase(), tokenStr);
+
+      setMsg("Invitación reenviada.");
+      await loadInvites(companyId);
+    } catch (e: any) {
+      setErr(`No se pudo reenviar: ${e?.message || "Error"}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ======================
+  // INVITES: Eliminar/Cancelar
+  // ======================
+  async function onCancelInvite(companyId: string, inviteId: string, email: string) {
+    setErr(null);
+    setMsg(null);
+
+    const ok = window.confirm(`¿Eliminar (cancelar) invitación para ${email}?`);
+    if (!ok) return;
+
+    try {
+      setLoading(true);
+      const { error } = await supabase.rpc("cancel_team_invite", { p_invite_id: inviteId });
+      if (error) {
+        setErr(`No se pudo cancelar: ${error.message}`);
+        return;
+      }
+      setMsg("Invitación cancelada.");
+      await loadInvites(companyId);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -1130,9 +1137,7 @@ export default function AccountSettingsPage() {
                   ✅ Cuenta activa
                 </div>
 
-                <h1 className="mt-4 text-white text-3xl font-extrabold tracking-tight">
-                  Configuración de cuenta
-                </h1>
+                <h1 className="mt-4 text-white text-3xl font-extrabold tracking-tight">Configuración de cuenta</h1>
                 <p className="mt-2 text-white/80 text-sm max-w-2xl">
                   Edita tu nombre, cambia tu contraseña y administra tus empresas y equipo.
                 </p>
@@ -1140,12 +1145,8 @@ export default function AccountSettingsPage() {
 
               <div className="rounded-2xl bg-white/10 border border-white/10 px-5 py-4 min-w-[260px]">
                 <div className="text-white/80 text-xs font-bold">Usuario</div>
-                <div className="mt-1 text-white font-extrabold truncate">
-                  {userDisplayName}
-                </div>
-                <div className="mt-1 text-white/70 text-xs truncate">
-                  {userEmail ?? ""}
-                </div>
+                <div className="mt-1 text-white font-extrabold truncate">{userDisplayName}</div>
+                <div className="mt-1 text-white/70 text-xs truncate">{userEmail ?? ""}</div>
                 <div className="mt-4 grid gap-2">
                   <button
                     onClick={loadAll}
@@ -1166,7 +1167,6 @@ export default function AccountSettingsPage() {
                     Volver →
                   </button>
                 </div>
-
               </div>
             </div>
           </div>
@@ -1174,9 +1174,7 @@ export default function AccountSettingsPage() {
           {(err || msg) && (
             <div className="px-8 pb-6">
               {err && (
-                <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-rose-50">
-                  {err}
-                </div>
+                <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-rose-50">{err}</div>
               )}
               {msg && (
                 <div className="mt-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-emerald-50">
@@ -1194,12 +1192,8 @@ export default function AccountSettingsPage() {
             <div className="rounded-3xl bg-white border border-slate-200 shadow-sm p-6">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-slate-900 font-extrabold text-lg">
-                    Perfil
-                  </div>
-                  <div className="mt-1 text-slate-600 text-sm">
-                    Actualiza tu nombre visible.
-                  </div>
+                  <div className="text-slate-900 font-extrabold text-lg">Perfil</div>
+                  <div className="mt-1 text-slate-600 text-sm">Actualiza tu nombre visible.</div>
                 </div>
                 <Pill tone="blue">Cuenta</Pill>
               </div>
@@ -1226,12 +1220,8 @@ export default function AccountSettingsPage() {
             <div className="rounded-3xl bg-white border border-slate-200 shadow-sm p-6">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-slate-900 font-extrabold text-lg">
-                    Seguridad
-                  </div>
-                  <div className="mt-1 text-slate-600 text-sm">
-                    Cambia tu contraseña.
-                  </div>
+                  <div className="text-slate-900 font-extrabold text-lg">Seguridad</div>
+                  <div className="mt-1 text-slate-600 text-sm">Cambia tu contraseña.</div>
                 </div>
                 <Pill tone="neutral">Login</Pill>
               </div>
@@ -1264,9 +1254,7 @@ export default function AccountSettingsPage() {
                 >
                   Cambiar contraseña
                 </button>
-                <div className="text-xs text-slate-500">
-                  Tip: mínimo 8 caracteres, mezcla letras y números.
-                </div>
+                <div className="text-xs text-slate-500">Tip: mínimo 8 caracteres, mezcla letras y números.</div>
               </div>
             </div>
           </div>
@@ -1276,9 +1264,7 @@ export default function AccountSettingsPage() {
             <div className="rounded-3xl bg-white border border-slate-200 shadow-sm p-6">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <div className="text-slate-900 font-extrabold text-lg">
-                    Empresas
-                  </div>
+                  <div className="text-slate-900 font-extrabold text-lg">Empresas</div>
                   <div className="mt-1 text-slate-600 text-sm">
                     Tus accesos. Si eres <b>OWNER</b> puedes administrar empresa y equipo.
                   </div>
@@ -1309,26 +1295,23 @@ export default function AccountSettingsPage() {
                     const companyId = m.company_id;
                     const expanded = expandedCompanyId === companyId;
                     const isOwner = canManageCompany(companyId);
+
                     const team = teamByCompany[companyId] ?? [];
+                    const invites = invitesByCompany[companyId] ?? [];
 
                     return (
-                      <div
-                        key={companyId}
-                        className="rounded-3xl border border-slate-200 bg-slate-50 overflow-hidden"
-                      >
+                      <div key={companyId} className="rounded-3xl border border-slate-200 bg-slate-50 overflow-hidden">
                         <button
                           type="button"
                           onClick={async () => {
                             const next = expanded ? null : companyId;
                             setExpandedCompanyId(next);
-                            if (!expanded) await loadTeam(companyId);
+                            if (!expanded) await loadCompanyPeople(companyId);
                           }}
                           className="w-full px-5 py-4 flex items-center justify-between gap-4 hover:bg-slate-100"
                         >
                           <div className="min-w-0 text-left">
-                            <div className="text-slate-900 font-extrabold truncate">
-                              {c?.name ?? "Empresa"}
-                            </div>
+                            <div className="text-slate-900 font-extrabold truncate">{c?.name ?? "Empresa"}</div>
                             <div className="mt-2 flex flex-wrap items-center gap-2">
                               <Pill tone={roleTone(m.role) as any}>{m.role}</Pill>
                               <Pill tone={statusTone(m.status) as any}>{m.status}</Pill>
@@ -1337,15 +1320,8 @@ export default function AccountSettingsPage() {
                           </div>
 
                           <div className="flex items-center gap-3">
-                            <span className="text-slate-700 font-extrabold">
-                              {expanded ? "Ocultar" : "Ver"}
-                            </span>
-                            <ChevronDown
-                              className={cls(
-                                "h-4 w-4 text-slate-600 transition",
-                                expanded && "rotate-180"
-                              )}
-                            />
+                            <span className="text-slate-700 font-extrabold">{expanded ? "Ocultar" : "Ver"}</span>
+                            <ChevronDown className={cls("h-4 w-4 text-slate-600 transition", expanded && "rotate-180")} />
                           </div>
                         </button>
 
@@ -1355,7 +1331,7 @@ export default function AccountSettingsPage() {
 
                             <div className="mt-4 flex flex-wrap items-center gap-2">
                               <button
-                                onClick={() => loadTeam(companyId)}
+                                onClick={() => loadCompanyPeople(companyId)}
                                 className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-slate-900 font-extrabold hover:bg-slate-50"
                               >
                                 Refrescar equipo
@@ -1380,9 +1356,7 @@ export default function AccountSettingsPage() {
                                 onClick={() => setInviteCompanyId(companyId)}
                                 className={cls(
                                   "h-10 rounded-xl px-4 font-extrabold whitespace-nowrap",
-                                  isOwner
-                                    ? "bg-[#5fb1ff] text-[#0b2b4f] hover:brightness-105"
-                                    : "bg-slate-200 text-slate-500 cursor-not-allowed"
+                                  isOwner ? "bg-[#5fb1ff] text-[#0b2b4f] hover:brightness-105" : "bg-slate-200 text-slate-500 cursor-not-allowed"
                                 )}
                                 disabled={!isOwner}
                                 title={!isOwner ? "Solo OWNER puede invitar" : "Invitar miembro"}
@@ -1391,15 +1365,12 @@ export default function AccountSettingsPage() {
                               </button>
                             </div>
 
+                            {/* TEAM */}
                             <div className="mt-4 rounded-3xl border border-slate-200 bg-white p-5">
                               <div className="flex items-start justify-between gap-3">
                                 <div>
-                                  <div className="text-slate-900 font-extrabold">
-                                    Equipo
-                                  </div>
-                                  <div className="mt-1 text-slate-600 text-sm">
-                                    Miembros con acceso a esta empresa.
-                                  </div>
+                                  <div className="text-slate-900 font-extrabold">Equipo</div>
+                                  <div className="mt-1 text-slate-600 text-sm">Miembros con acceso a esta empresa.</div>
                                 </div>
                                 <Pill tone="neutral">{team.length} miembros</Pill>
                               </div>
@@ -1411,27 +1382,20 @@ export default function AccountSettingsPage() {
                                   </div>
                                 ) : (
                                   team.map((tm) => {
-                                    const name =
-                                      tm.profile_full_name ??
-                                      "(sin nombre en profile)";
+                                    const name = tm.profile_full_name ?? "(sin nombre en profile)";
+                                    const email = tm.profile_email ?? "—";
 
                                     return (
-                                      <div
-                                        key={tm.user_id}
-                                        className="rounded-2xl border border-slate-200 bg-slate-50 p-3"
-                                      >
+                                      <div key={tm.user_id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                                         <div className="flex flex-wrap items-center justify-between gap-3">
                                           <div className="min-w-[220px]">
-                                            <div className="text-slate-900 font-extrabold">
-                                              {name}
-                                            </div>
+                                            <div className="text-slate-900 font-extrabold">{name}</div>
+
+                                            <div className="mt-1 text-slate-600 text-xs truncate">{email}</div>
+
                                             <div className="mt-2 flex flex-wrap items-center gap-2">
-                                              <Pill tone={roleTone(tm.role) as any}>
-                                                {tm.role}
-                                              </Pill>
-                                              <Pill tone={statusTone(tm.status) as any}>
-                                                {tm.status}
-                                              </Pill>
+                                              <Pill tone={roleTone(tm.role) as any}>{tm.role}</Pill>
+                                              <Pill tone={statusTone(tm.status) as any}>{tm.status}</Pill>
                                             </div>
                                           </div>
 
@@ -1441,12 +1405,7 @@ export default function AccountSettingsPage() {
                                                 className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-slate-900 font-extrabold outline-none"
                                                 value={tm.role}
                                                 onChange={(e) =>
-                                                  onOwnerUpdateMember(
-                                                    companyId,
-                                                    tm.user_id,
-                                                    e.target.value as Role,
-                                                    tm.status
-                                                  )
+                                                  onOwnerUpdateMember(companyId, tm.user_id, e.target.value as Role, tm.status)
                                                 }
                                               >
                                                 <option value="OWNER">OWNER</option>
@@ -1458,41 +1417,95 @@ export default function AccountSettingsPage() {
                                                 className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-slate-900 font-extrabold outline-none"
                                                 value={tm.status}
                                                 onChange={(e) =>
-                                                  onOwnerUpdateMember(
-                                                    companyId,
-                                                    tm.user_id,
-                                                    tm.role,
-                                                    e.target.value as Status
-                                                  )
+                                                  onOwnerUpdateMember(companyId, tm.user_id, tm.role, e.target.value as Status)
                                                 }
                                               >
                                                 <option value="ACTIVE">ACTIVE</option>
-                                                <option value="INVITED">INVITED</option>
                                                 <option value="DISABLED">DISABLED</option>
                                               </select>
 
                                               <button
-                                                onClick={() =>
-                                                  onOwnerRemoveMember(
-                                                    companyId,
-                                                    tm.user_id
-                                                  )
-                                                }
+                                                onClick={() => onOwnerRemoveMember(companyId, tm.user_id)}
                                                 className="h-10 rounded-xl border border-rose-200 bg-rose-50 px-4 text-rose-700 font-extrabold hover:bg-rose-100"
                                               >
                                                 Eliminar
                                               </button>
                                             </div>
                                           ) : (
-                                            <div className="text-slate-500 font-bold">
-                                              Solo visual
-                                            </div>
+                                            <div className="text-slate-500 font-bold">Solo visual</div>
                                           )}
                                         </div>
                                       </div>
                                     );
                                   })
                                 )}
+                              </div>
+                            </div>
+
+                            {/* ✅ INVITES PENDIENTES */}
+                            <div className="mt-4 rounded-3xl border border-slate-200 bg-white p-5">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="text-slate-900 font-extrabold">Invitaciones pendientes</div>
+                                  <div className="mt-1 text-slate-600 text-sm">Correos enviados que aún no han aceptado.</div>
+                                </div>
+                                <Pill tone="amber">{invites.length} INVITED</Pill>
+                              </div>
+
+                              <div className="mt-4 space-y-2">
+                                {invites.length === 0 ? (
+                                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-slate-700">
+                                    No hay invitaciones pendientes.
+                                  </div>
+                                ) : (
+                                  invites.map((iv) => (
+                                    <div key={iv.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                                      <div className="flex flex-wrap items-center justify-between gap-3">
+                                        <div className="min-w-[220px]">
+                                          <div className="text-slate-900 font-extrabold">
+                                            {iv.full_name || "Invitado (pendiente)"}
+                                          </div>
+                                          <div className="mt-1 text-slate-600 text-xs truncate">{iv.email}</div>
+
+                                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                                            <Pill tone={roleTone(iv.role) as any}>{iv.role}</Pill>
+                                            <Pill tone="amber">INVITED</Pill>
+                                          </div>
+                                        </div>
+
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <button
+                                            onClick={() => onResendInvite(companyId, iv.id, iv.email)}
+                                            className={cls(
+                                              "h-10 rounded-xl border border-slate-200 bg-white px-4 text-slate-900 font-extrabold hover:bg-slate-50",
+                                              !isOwner && "opacity-60 cursor-not-allowed"
+                                            )}
+                                            disabled={!isOwner}
+                                            title={!isOwner ? "Solo OWNER puede reenviar" : "Reenviar invitación (link nuevo)"}
+                                          >
+                                            Reenviar
+                                          </button>
+
+                                          <button
+                                            onClick={() => onCancelInvite(companyId, iv.id, iv.email)}
+                                            className={cls(
+                                              "h-10 rounded-xl border border-rose-200 bg-rose-50 px-4 text-rose-700 font-extrabold hover:bg-rose-100",
+                                              !isOwner && "opacity-60 cursor-not-allowed"
+                                            )}
+                                            disabled={!isOwner}
+                                            title={!isOwner ? "Solo OWNER puede eliminar" : "Eliminar invitación"}
+                                          >
+                                            Eliminar
+                                          </button>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+
+                              <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-[12px] text-slate-700 ring-1 ring-slate-200">
+                                Tip: “Reenviar” genera un link nuevo (rota el token) y vuelve a mandar el correo.
                               </div>
                             </div>
                           </div>
@@ -1519,7 +1532,7 @@ export default function AccountSettingsPage() {
           companyId={companyModalId}
           onSaved={async () => {
             await loadAll();
-            if (expandedCompanyId) await loadTeam(expandedCompanyId);
+            if (expandedCompanyId) await loadCompanyPeople(expandedCompanyId);
           }}
           onClose={() => setOpenCompanyModal(false)}
         />
@@ -1548,12 +1561,7 @@ export default function AccountSettingsPage() {
 
 function ChevronDown({ className = "" }: { className?: string }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 20 20"
-      fill="currentColor"
-      aria-hidden="true"
-    >
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
       <path
         fillRule="evenodd"
         d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 10.94l3.71-3.71a.75.75 0 1 1 1.06 1.06l-4.24 4.24a.75.75 0 0 1-1.06 0L5.21 8.29a.75.75 0 0 1 .02-1.08Z"

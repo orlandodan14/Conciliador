@@ -104,14 +104,17 @@ export default function SelectCompanyPage() {
   }, [loading, rows.length]);
 
   const onPick = (cid: string, name: string) => {
-    // por ahora NO navegamos a ningún lado, solo guardamos
+    // 1) Guardamos la empresa activa
     try {
       localStorage.setItem("active_company_id", cid);
       localStorage.setItem("last_company_id", cid);
     } catch {}
 
-    setToast(`✅ Listo. Elegiste: ${name}. (Luego te llevará al dashboard)`);
-    setTimeout(() => setToast(null), 2200);
+    // 2) (Opcional) toast corto, pero navegamos de inmediato
+    setToast(`✅ Entrando a: ${name}…`);
+
+    // 3) Navegar al dashboard dentro de workspace
+    router.push("/dashboard");
   };
 
   return (
