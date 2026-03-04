@@ -38,9 +38,8 @@ export default function Sidebar({ collapsed, onToggle }: Props) {
         title: "Gestión de Ventas",
         items: [
           { type: "link", label: "Clientes", href: "/gestionVentas/clientes" },
-          { type: "link", label: "Ventas", href: "/gestionVentas/ventas" },
+          { type: "link", label: "Documentos Tributarios", href: "/gestionVentas/documentos-tributarios" },
           { type: "link", label: "Pagos / Cobranza", href: "/gestionVentas/cobranza" },
-          { type: "link", label: "Notas de crédito", href: "/gestionVentas/notas-credito" },
         ],
       },
       {
@@ -75,6 +74,7 @@ export default function Sidebar({ collapsed, onToggle }: Props) {
           { type: "link", label: "Moneda y T/Cambio", href: "/configuracion/monedas" },
           { type: "link", label: "Periódos Contables", href: "/configuracion/periodos-contables" },
           { type: "link", label: "Impuestos", href: "/configuracion/impuestos" },
+          { type: "link", label: "Documentos Fiscales", href: "/configuracion/documentos-fiscales" },
           { type: "link", label: "Cuentas Default", href: "/configuracion/cuentas-default" },
 
 
