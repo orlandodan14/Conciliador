@@ -158,7 +158,7 @@ type AccountNodeLite = {
  * =========================
  */
 const PROCESS_CATALOG: Proc[] = [
-  // Ventas
+    // Ventas
   { key: "SALE_REVENUE_TAXED", name: "Ventas afectas (Ingreso)", module: "Ventas", hint: "Cuenta de ingresos para líneas afectas." },
   { key: "SALE_REVENUE_EXEMPT", name: "Ventas exentas (Ingreso)", module: "Ventas", hint: "Cuenta de ingresos para líneas exentas / 0%." },
   { key: "SALE_DISCOUNTS_GIVEN", name: "Descuentos otorgados (Contra-ingreso)", module: "Ventas" },
@@ -167,6 +167,14 @@ const PROCESS_CATALOG: Proc[] = [
   { key: "CUSTOMER_ADVANCES", name: "Anticipos de clientes (Pasivo)", module: "Ventas" },
   { key: "SALE_TAX_OUTPUT", name: "Impuesto venta (IVA débito / output)", module: "Ventas", hint: "Cuenta de IVA débito / VAT output.", requires: ["tax"] },
 
+  { key: "SALE_PAYMENT_CASH", name: "Cobro venta en efectivo", module: "Ventas", hint: "Cuenta contable para la porción cobrada en efectivo." },
+  { key: "SALE_PAYMENT_TRANSFER", name: "Cobro venta por transferencia", module: "Ventas", hint: "Cuenta contable para la porción cobrada por transferencia." },
+  { key: "SALE_PAYMENT_CARD_DEBIT", name: "Cobro venta por tarjeta débito", module: "Ventas", hint: "Cuenta contable para la porción cobrada con tarjeta débito." },
+  { key: "SALE_PAYMENT_CARD_CREDIT", name: "Cobro venta por tarjeta crédito", module: "Ventas", hint: "Cuenta contable para la porción cobrada con tarjeta crédito." },
+  { key: "SALE_PAYMENT_CHECK", name: "Cobro venta por cheque", module: "Ventas", hint: "Cuenta contable para la porción cobrada con cheque." },
+  { key: "SALE_PAYMENT_OTHER", name: "Cobro venta por otro medio", module: "Ventas", hint: "Cuenta contable para la porción cobrada por otros medios." },
+  { key: "SALE_PAYMENT_CREDIT", name: "Cobro venta a crédito / saldo cliente", module: "Ventas", hint: "Cuenta contable para el saldo pendiente del cliente." },
+  
   // Compras
   { key: "AP_SUPPLIERS", name: "Proveedores / Cuentas por pagar (AP)", module: "Compras" },
   { key: "PURCHASE_EXPENSE_TAXED", name: "Compras/Gastos afectos", module: "Compras", hint: "Gasto o inventario (según tu modelo)." },
@@ -747,7 +755,7 @@ export default function CuentasPorDefectoPage() {
                 )}
 
                 <div className="border-t border-slate-200 bg-slate-50 px-5 py-3 text-[12px] text-slate-600">
-                  Tip: primero configura los procesos críticos: <b>AR/AP</b>, <b>IVA</b>, <b>Banco</b>, <b>Clearing</b>.
+                  Tip: primero configura los procesos críticos: Ventas, AR/AP, IVA, Banco y formas de cobro de ventas.
                 </div>
               </div>
             </div>

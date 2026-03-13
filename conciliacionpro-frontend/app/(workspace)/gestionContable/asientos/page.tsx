@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabaseClient";
+import CounterpartyCreateModal from "@/app/(workspace)/components/counterparties/CounterpartyCreateModal";
 
 /**
  * =========================
@@ -416,29 +417,11 @@ export default function Page() {
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   // Counterparty modal
-  const [cpModalOpen, setCpModalOpen] = useState(false);
-  const [cpForm, setCpForm] = useState<{
-    identifier: string;
-    name: string;
-    type: Counterparty["type"];
-    email: string;
-    phone: string;
-    address: string;
-    notes: string;
-    extraJson: string;
-    is_active: boolean;
-  }>({
+  // Counterparty modal (REUTILIZABLE)
+  const [cpModal, setCpModal] = useState<{ open: boolean; identifier: string }>({
+    open: false,
     identifier: "",
-    name: "",
-    type: "OTRO",
-    email: "",
-    phone: "",
-    address: "",
-    notes: "",
-    extraJson: "{}",
-    is_active: true,
   });
-  const [cpSaving, setCpSaving] = useState(false);
 
   /**
    * =========================
@@ -814,7 +797,7 @@ export default function Page() {
 
         // resolver contraparte (nombre)
         if (patch.counterparty_identifier !== undefined) {
-          const key = String(patch.counterparty_identifier || "").trim();
+          const key = normalizeCode(patch.counterparty_identifier || "");
           const cp = key ? counterpartyMap[key] : undefined;
           next.counterparty_name_resolved = cp?.name ?? "";
         }
@@ -1195,72 +1178,25 @@ export default function Page() {
    * Counterparty modal
    * =======================
    */
-  function openCreateCounterparty(identifier: string) {
-    setCpForm({
-      identifier: identifier.trim(),
-      name: "",
-      type: "OTRO",
-      email: "",
-      phone: "",
-      address: "",
-      notes: "",
-      extraJson: "{}",
-      is_active: true,
-    });
-    setCpModalOpen(true);
-  }
+    function openCreateCounterparty(identifier: string) {
+      setCpModal({ open: true, identifier: String(identifier || "").trim() });
+    }
 
-  async function saveCounterparty() {
-    setCpSaving(true);
-    try {
-      if (!companyId) throw new Error("Falta companyId.");
-      if (!cpForm.identifier.trim()) throw new Error("identifier requerido.");
-      if (!cpForm.name.trim()) throw new Error("name requerido.");
+    function onCounterpartyCreated(created: Counterparty) {
+      // Mantén tu mapa por identifier (como lo tienes hoy)
+      const key = String(created.identifier || "").trim();
 
-      let extraObj: any = {};
-      try {
-        extraObj = cpForm.extraJson?.trim() ? JSON.parse(cpForm.extraJson) : {};
-      } catch {
-        throw new Error("extraJson no es JSON válido.");
-      }
-
-      const payload: any = {
-        company_id: companyId,
-        identifier: cpForm.identifier.trim(),
-        name: cpForm.name.trim(),
-        type: cpForm.type,
-        is_active: !!cpForm.is_active,
-        extra: extraObj,
-      };
-
-      if (cpForm.email.trim()) payload.email = cpForm.email.trim();
-      if (cpForm.phone.trim()) payload.phone = cpForm.phone.trim();
-      if (cpForm.address.trim()) payload.address = cpForm.address.trim();
-      if (cpForm.notes.trim()) payload.notes = cpForm.notes.trim();
-
-      const { data, error } = await supabase
-        .from("counterparties")
-        .insert(payload)
-        .select(
-          "id,company_id,identifier,name,type,is_active,email,phone,address,notes,extra"
-        )
-        .single();
-
-      if (error) throw error;
-
-      const created = data as any as Counterparty;
-      setCounterpartyMap((m) => ({ ...m, [created.identifier]: created }));
+      setCounterpartyMap((m) => ({ ...m, [key]: created }));
       setCounterpartiesAvailable(true);
 
+      // Actualizar nombre en líneas que tengan ese identifier
       setLines((prev) =>
         prev.map((l) => {
-          if (normalizeCode(l.counterparty_identifier) !== created.identifier)
-            return l;
+          if (normalizeCode(l.counterparty_identifier) !== key) return l;
           return { ...l, counterparty_name_resolved: created.name };
         })
       );
 
-      setCpModalOpen(false);
       setIssues((prev) => [
         {
           level: "warn",
@@ -1269,18 +1205,7 @@ export default function Page() {
         },
         ...prev,
       ]);
-    } catch (e: any) {
-      setIssues([
-        {
-          level: "error",
-          code: "CP_CREATE_FAILED",
-          message: e?.message || "No se pudo crear el tercero.",
-        },
-      ]);
-    } finally {
-      setCpSaving(false);
     }
-  }
 
   /**
    * =======================
@@ -3636,151 +3561,14 @@ export default function Page() {
       </div>
 
       {/* Modal crear tercero */}
-      <Modal
-        open={cpModalOpen}
-        title={`Crear tercero (${cpForm.identifier || "—"})`}
-        onClose={() => setCpModalOpen(false)}
-      >
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div>
-              <label className="text-xs text-slate-600">identifier</label>
-              <div className="text-[11px] text-slate-500">RUT/NIT/Documento</div>
-              <input
-                className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
-                value={cpForm.identifier}
-                onChange={(e) =>
-                  setCpForm((p) => ({ ...p, identifier: e.target.value }))
-                }
-              />
-            </div>
-
-            <div className="md:col-span-2">
-              <label className="text-xs text-slate-600">name</label>
-              <div className="text-[11px] text-slate-500">Razón social</div>
-              <input
-                className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
-                value={cpForm.name}
-                onChange={(e) =>
-                  setCpForm((p) => ({ ...p, name: e.target.value }))
-                }
-                placeholder="Ej: Comercial ABC SpA"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-slate-600">type</label>
-              <div className="text-[11px] text-slate-500">Tipo de tercero</div>
-              <select
-                className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
-                value={cpForm.type}
-                onChange={(e) =>
-                  setCpForm((p) => ({ ...p, type: e.target.value as any }))
-                }
-              >
-                <option value="CLIENTE">CLIENTE</option>
-                <option value="PROVEEDOR">PROVEEDOR</option>
-                <option value="OTRO">OTRO</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="text-xs text-slate-600">email (opcional)</label>
-              <input
-                className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
-                value={cpForm.email}
-                onChange={(e) =>
-                  setCpForm((p) => ({ ...p, email: e.target.value }))
-                }
-                placeholder="contacto@empresa.com"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-slate-600">phone (opcional)</label>
-              <input
-                className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
-                value={cpForm.phone}
-                onChange={(e) =>
-                  setCpForm((p) => ({ ...p, phone: e.target.value }))
-                }
-                placeholder="+56 9 ..."
-              />
-            </div>
-
-            <div className="md:col-span-3">
-              <label className="text-xs text-slate-600">address (opcional)</label>
-              <input
-                className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
-                value={cpForm.address}
-                onChange={(e) =>
-                  setCpForm((p) => ({ ...p, address: e.target.value }))
-                }
-                placeholder="Dirección"
-              />
-            </div>
-
-            <div className="md:col-span-3">
-              <label className="text-xs text-slate-600">notes (opcional)</label>
-              <textarea
-                className="mt-1 w-full rounded-lg border px-3 py-2 text-sm min-h-[80px]"
-                value={cpForm.notes}
-                onChange={(e) =>
-                  setCpForm((p) => ({ ...p, notes: e.target.value }))
-                }
-                placeholder="Notas internas..."
-              />
-            </div>
-
-            <div className="md:col-span-3">
-              <label className="text-xs text-slate-600">extra (json)</label>
-              <div className="text-[11px] text-slate-500">
-                Se guarda en la columna extra (jsonb). Ej: {"{ \"tags\": [\"vip\"] }"}
-              </div>
-              <textarea
-                className="mt-1 w-full rounded-lg border px-3 py-2 text-sm font-mono min-h-[90px]"
-                value={cpForm.extraJson}
-                onChange={(e) =>
-                  setCpForm((p) => ({ ...p, extraJson: e.target.value }))
-                }
-              />
-            </div>
-
-            <div className="md:col-span-3 flex items-center gap-2">
-              <input
-                id="cp-active"
-                type="checkbox"
-                checked={cpForm.is_active}
-                onChange={(e) =>
-                  setCpForm((p) => ({ ...p, is_active: e.target.checked }))
-                }
-              />
-              <label htmlFor="cp-active" className="text-sm text-slate-700">
-                is_active
-              </label>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-end gap-2 pt-2">
-            <button
-              className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50"
-              onClick={() => setCpModalOpen(false)}
-            >
-              Cancelar
-            </button>
-            <button
-              className={cls(
-                "rounded-lg px-3 py-2 text-sm text-white",
-                cpSaving ? "bg-slate-400" : "bg-slate-900 hover:bg-slate-800"
-              )}
-              onClick={saveCounterparty}
-              disabled={cpSaving}
-            >
-              {cpSaving ? "Guardando..." : "Crear"}
-            </button>
-          </div>
-        </div>
-      </Modal>
+      {/* Modal crear tercero (reutilizable) */}
+      <CounterpartyCreateModal
+        open={cpModal.open}
+        companyId={companyId}
+        initialIdentifier={cpModal.identifier}
+        onClose={() => setCpModal({ open: false, identifier: "" })}
+        onCreated={onCounterpartyCreated}
+      />
     </div>
   );
 }

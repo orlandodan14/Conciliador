@@ -63,41 +63,46 @@ function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-[60] bg-black/35 p-4 sm:p-6"
+      className="fixed inset-0 z-[60] bg-black/45 p-4 sm:p-6"
       role="dialog"
       aria-modal="true"
     >
       <div className="mx-auto flex h-full max-w-4xl items-center justify-center">
         <div
           className={cls(
-            "w-full overflow-hidden rounded-2xl bg-white shadow-xl ring-1 ring-black/5",
+            "w-full overflow-hidden rounded-[22px] bg-white shadow-xl ring-1 ring-black/5",
             "max-h-[calc(100vh-2rem)] sm:max-h-[calc(100vh-3rem)]"
           )}
         >
-          <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-white/90 px-5 py-4 backdrop-blur">
-            <div className="min-w-0">
-              <div className="truncate text-lg font-semibold text-slate-900">
-                {title}
-              </div>
-              <div className="mt-0.5 text-xs font-semibold text-slate-500">
-                Inventario • Catálogo
-              </div>
-            </div>
+          <div className="relative bg-gradient-to-r from-[#0b2b4f] via-[#123b63] to-[#0b2b4f] px-5 py-4 text-white">
+            <div className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
+            <div className="pointer-events-none absolute -bottom-24 -left-24 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
 
-            <button
-              onClick={onClose}
-              className="ml-3 rounded-xl px-3 py-1.5 text-sm font-semibold text-slate-600 hover:bg-slate-100"
-              aria-label="Cerrar"
-              title="Cerrar"
-              type="button"
-            >
-              ✕
-            </button>
+            <div className="relative flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-[11px] font-extrabold uppercase text-white/80">
+                  Inventario • Catálogo
+                </div>
+                <h3 className="truncate text-lg font-black text-white">
+                  {title}
+                </h3>
+              </div>
+
+              <button
+                onClick={onClose}
+                className="ml-3 rounded-xl px-3 py-1.5 text-sm font-extrabold text-white/90 hover:bg-white/10"
+                aria-label="Cerrar"
+                title="Cerrar"
+                type="button"
+              >
+                ✕
+              </button>
+            </div>
           </div>
 
           <div
             className={cls(
-              "px-5 py-4 overflow-y-auto",
+              "overflow-y-auto overflow-x-hidden px-5 py-4",
               footer
                 ? "max-h-[calc(100vh-2rem-160px)] sm:max-h-[calc(100vh-3rem-160px)]"
                 : "max-h-[calc(100vh-2rem-88px)] sm:max-h-[calc(100vh-3rem-88px)]"
@@ -107,7 +112,7 @@ function Modal({
           </div>
 
           {footer ? (
-            <div className="sticky bottom-0 z-10 border-t bg-white/90 px-5 py-4 backdrop-blur">
+            <div className="border-t bg-white/95 px-5 py-4 backdrop-blur">
               {footer}
             </div>
           ) : null}
@@ -132,7 +137,7 @@ type ItemRow = {
   description: string | null;
 
   item_type: ItemType;
-  category_id: string | null;
+  business_line_id: string | null;
 
   unit: string;
   barcode: string | null;
@@ -151,17 +156,19 @@ type ItemRow = {
   notes: string | null;
 };
 
-type CategoryRow = {
-  id: string;
-  code: string;
-  name: string;
-  is_active: boolean;
-};
-
 type TaxRow = {
   id: string;
   code: string | null;
   name: string | null;
+};
+
+type BusinessLineRow = {
+  id: string;
+  code: string;
+  name: string;
+  is_active: boolean;
+  is_default: boolean;
+  allow_sales: boolean;
 };
 
 function formatNumber(n: number) {
@@ -191,7 +198,6 @@ function itemTypeLabel(t: ItemType) {
 
 export default function ArticulosPage() {
   const ITEMS_TABLE = "items";
-  const CATS_TABLE = "item_categories";
   const TAXES_TABLE = "taxes"; // si no existe o RLS bloquea, solo se oculta
 
   // companyId (localStorage)
@@ -218,8 +224,8 @@ export default function ArticulosPage() {
 
   // data
   const [items, setItems] = useState<ItemRow[]>([]);
-  const [cats, setCats] = useState<CategoryRow[]>([]);
   const [taxes, setTaxes] = useState<TaxRow[]>([]);
+  const [businessLines, setBusinessLines] = useState<BusinessLineRow[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -228,7 +234,6 @@ export default function ArticulosPage() {
   const [qText, setQText] = useState("");
   const [qType, setQType] = useState<"" | ItemType>("");
   const [qActive, setQActive] = useState<"" | "active" | "inactive">("");
-  const [qCat, setQCat] = useState<string>("");
 
   // modal
   const [openEdit, setOpenEdit] = useState(false);
@@ -240,7 +245,7 @@ export default function ArticulosPage() {
   const [fName, setFName] = useState("");
   const [fDesc, setFDesc] = useState("");
   const [fType, setFType] = useState<ItemType>("PRODUCT");
-  const [fCatId, setFCatId] = useState<string | null>(null);
+  const [fBusinessLineId, setFBusinessLineId] = useState<string | null>(null);
 
   const [fUnit, setFUnit] = useState("UN");
   const [fBarcode, setFBarcode] = useState("");
@@ -268,16 +273,6 @@ export default function ArticulosPage() {
     setError(null);
 
     try {
-      // categorías (opcionales)
-      const c1 = await supabase
-        .from(CATS_TABLE)
-        .select("id, code, name, is_active")
-        .eq("company_id", cid)
-        .order("code", { ascending: true });
-
-      if (!c1.error) setCats(((c1.data as any[]) ?? []) as CategoryRow[]);
-      else setCats([]);
-
       // taxes (opcionales)
       const t1 = await supabase
         .from(TAXES_TABLE)
@@ -289,6 +284,19 @@ export default function ArticulosPage() {
       if (!t1.error) setTaxes(((t1.data as any[]) ?? []) as TaxRow[]);
       else setTaxes([]);
 
+      // business lines (ventas)
+      const bl1 = await supabase
+        .from("business_lines")
+        .select("id, code, name, is_active, is_default, allow_sales")
+        .eq("company_id", cid)
+        .eq("is_active", true)
+        .eq("allow_sales", true)
+        .order("is_default", { ascending: false })
+        .order("code", { ascending: true });
+
+      if (!bl1.error) setBusinessLines(((bl1.data as any[]) ?? []) as BusinessLineRow[]);
+      else setBusinessLines([]);
+      
       // items
       const { data, error } = await supabase
         .from(ITEMS_TABLE)
@@ -300,7 +308,7 @@ export default function ArticulosPage() {
             "name",
             "description",
             "item_type",
-            "category_id",
+            "business_line_id",
             "unit",
             "barcode",
             "price_sale",
@@ -337,24 +345,11 @@ export default function ArticulosPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companyId]);
 
-  const catById = useMemo(() => {
-    const m = new Map<string, CategoryRow>();
-    cats.forEach((c) => m.set(c.id, c));
-    return m;
-  }, [cats]);
-
   const taxById = useMemo(() => {
     const m = new Map<string, TaxRow>();
     taxes.forEach((t) => m.set(t.id, t));
     return m;
   }, [taxes]);
-
-  function catLabel(id: string | null) {
-    if (!id) return "—";
-    const c = catById.get(id);
-    if (!c) return `Cat: ${id.slice(0, 8)}…`;
-    return `${c.code} • ${c.name}`;
-  }
 
   function taxLabel(id: string | null, exempt: boolean) {
     if (exempt) return "Exento";
@@ -366,6 +361,13 @@ export default function ArticulosPage() {
     return code && name ? `${code} • ${name}` : name || code || t.id;
   }
 
+  function businessLineLabel(id: string | null) {
+    if (!id) return "—";
+    const bl = businessLines.find((x) => x.id === id);
+    if (!bl) return `BL: ${id.slice(0, 8)}…`;
+    return `${bl.code} • ${bl.name}`;
+  }
+
   const filtered = useMemo(() => {
     const t = qText.trim().toLowerCase();
 
@@ -375,14 +377,13 @@ export default function ArticulosPage() {
         if (!qActive) return true;
         return qActive === "active" ? r.is_active : !r.is_active;
       })
-      .filter((r) => (qCat ? (r.category_id ?? "") === qCat : true))
       .filter((r) => {
         if (!t) return true;
         const tags = (r.tags ?? []).join(" ");
         const hay = `${r.sku} ${r.name} ${r.description ?? ""} ${r.unit ?? ""} ${r.barcode ?? ""} ${tags} ${r.notes ?? ""}`.toLowerCase();
         return hay.includes(t);
       });
-  }, [items, qText, qType, qActive, qCat]);
+  }, [items, qText, qType, qActive]);
 
   function openCreate() {
     setEditing(null);
@@ -391,7 +392,9 @@ export default function ArticulosPage() {
     setFName("");
     setFDesc("");
     setFType("PRODUCT");
-    setFCatId(null);
+    setFBusinessLineId(
+      businessLines.find((x) => x.is_default)?.id ?? null
+    );
 
     setFUnit("UN");
     setFBarcode("");
@@ -419,7 +422,7 @@ export default function ArticulosPage() {
     setFName(r.name ?? "");
     setFDesc(r.description ?? "");
     setFType(r.item_type ?? "PRODUCT");
-    setFCatId(r.category_id ?? null);
+    setFBusinessLineId(r.business_line_id ?? null);
 
     setFUnit(r.unit ?? "UN");
     setFBarcode(r.barcode ?? "");
@@ -462,7 +465,7 @@ export default function ArticulosPage() {
         name,
         description: fDesc.trim() ? fDesc.trim() : null,
         item_type: fType,
-        category_id: fCatId,
+        business_line_id: fBusinessLineId,
 
         unit: fUnit.trim() ? fUnit.trim() : "UN",
         barcode: fBarcode.trim() ? fBarcode.trim() : null,
@@ -497,7 +500,7 @@ export default function ArticulosPage() {
               "name",
               "description",
               "item_type",
-              "category_id",
+              "business_line_id",
               "unit",
               "barcode",
               "price_sale",
@@ -532,7 +535,7 @@ export default function ArticulosPage() {
               "name",
               "description",
               "item_type",
-              "category_id",
+              "business_line_id",
               "unit",
               "barcode",
               "price_sale",
@@ -588,7 +591,7 @@ export default function ArticulosPage() {
   /**
    * Tabla pro (grid)
    */
-  const gridCols = "grid-cols-[140px_2.2fr_160px_160px_200px_120px_220px]";
+  const gridCols = "grid-cols-[150px_2.6fr_140px_220px_120px_220px]";
   const cellBase = "min-w-0";
 
   return (
@@ -708,23 +711,6 @@ export default function ArticulosPage() {
                 </select>
               </div>
 
-              <div className="lg:col-span-2">
-                <div className="text-[11px] font-extrabold uppercase text-slate-600">
-                  Categoría
-                </div>
-                <select
-                  value={qCat}
-                  onChange={(e) => setQCat(e.target.value)}
-                  className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-2 text-[12px] font-extrabold text-slate-900 outline-none focus:ring-2 focus:ring-slate-200"
-                >
-                  <option value="">Todas</option>
-                  {cats.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.code} • {c.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
             </div>
           </div>
 
@@ -734,11 +720,10 @@ export default function ArticulosPage() {
               <div className="min-w-[1150px]">
                 {/* header */}
                 <div className={cls("grid items-center border-b border-slate-200 bg-slate-50 px-5 py-2.5", gridCols)}>
-                  <div className={cls(cellBase, "text-[11px] font-extrabold uppercase text-slate-600")}>SKU</div>
-                  <div className={cls(cellBase, "pl-4 border-l border-slate-200 text-[11px] font-extrabold uppercase text-slate-600")}>Artículo</div>
+                  <div className={cls(cellBase, "text-[11px] font-extrabold uppercase text-slate-600")}>Código</div>
+                  <div className={cls(cellBase, "pl-4 border-l border-slate-200 text-[11px] font-extrabold uppercase text-slate-600")}>Nombre</div>
                   <div className={cls(cellBase, "pl-4 border-l border-slate-200 text-[11px] font-extrabold uppercase text-slate-600")}>Tipo</div>
-                  <div className={cls(cellBase, "pl-4 border-l border-slate-200 text-[11px] font-extrabold uppercase text-slate-600")}>Categoría</div>
-                  <div className={cls(cellBase, "pl-4 border-l border-slate-200 text-[11px] font-extrabold uppercase text-slate-600")}>Precio venta</div>
+                  <div className={cls(cellBase, "pl-4 border-l border-slate-200 text-[11px] font-extrabold uppercase text-slate-600")}>Centro de utilidad</div>
                   <div className={cls(cellBase, "pl-4 border-l border-slate-200 text-[11px] font-extrabold uppercase text-slate-600")}>Estado</div>
                   <div className={cls(cellBase, "pl-4 border-l border-slate-200 text-[11px] font-extrabold uppercase text-slate-600 text-right")}>Acciones</div>
                 </div>
@@ -779,25 +764,11 @@ export default function ArticulosPage() {
                           <div className="text-[13px] font-extrabold text-slate-800 truncate">
                             {r.name}
                           </div>
-                          <div className="mt-0.5 text-[12px] text-slate-500 truncate">
-                            {r.unit ? `Unidad: ${r.unit}` : "Unidad: —"}
-                            {r.barcode ? ` • Barcode: ${r.barcode}` : ""}
-                            {r.tax_exempt || r.tax_id ? ` • Impuesto: ${taxLabel(r.tax_id, r.tax_exempt)}` : ""}
-                          </div>
-
-                          <div className="mt-1 flex flex-wrap items-center gap-2">
-                            {tags.map((t) => (
-                              <span key={t} className="rounded-full bg-white px-2.5 py-1 text-[11px] font-black text-slate-700 ring-1 ring-slate-200">
-                                #{t}
-                              </span>
-                            ))}
-                            {moreTags > 0 ? (
-                              <span className="text-[11px] font-black text-slate-500">+{moreTags}</span>
-                            ) : null}
-                          </div>
 
                           {r.description ? (
-                            <div className="mt-0.5 text-[12px] text-slate-500 truncate">{r.description}</div>
+                            <div className="mt-0.5 text-[12px] text-slate-500 truncate">
+                              {r.description}
+                            </div>
                           ) : null}
                         </div>
 
@@ -805,27 +776,11 @@ export default function ArticulosPage() {
                           <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-[11px] font-black text-slate-700 whitespace-nowrap">
                             {itemTypeLabel(r.item_type)}
                           </span>
-                          {r.track_inventory ? (
-                            <div className="mt-1 text-[12px] text-indigo-700 font-semibold">
-                              Control inventario
-                            </div>
-                          ) : (
-                            <div className="mt-1 text-[12px] text-slate-400">Sin inventario</div>
-                          )}
                         </div>
 
                         <div className={cls(cellBase, "pl-4 border-l border-slate-200")}>
                           <div className="text-[13px] font-semibold text-slate-900 truncate">
-                            {catLabel(r.category_id)}
-                          </div>
-                        </div>
-
-                        <div className={cls(cellBase, "pl-4 border-l border-slate-200")}>
-                          <div className="text-[13px] font-black text-slate-900">
-                            {formatNumber(Number(r.price_sale ?? 0))}
-                          </div>
-                          <div className="text-[12px] text-slate-500">
-                            Costo: {formatNumber(Number(r.price_cost ?? 0))}
+                            {businessLineLabel(r.business_line_id)}
                           </div>
                         </div>
 
@@ -978,24 +933,27 @@ export default function ArticulosPage() {
             </select>
           </div>
 
-          <div className="sm:col-span-4">
-            <div className="text-xs font-black text-slate-600">Categoría</div>
+          <div className="sm:col-span-8">
+            <div className="text-xs font-black text-slate-600">Centro de utilidad</div>
             <select
-              value={fCatId ?? ""}
-              onChange={(e) => setFCatId(e.target.value ? e.target.value : null)}
+              value={fBusinessLineId ?? ""}
+              onChange={(e) => setFBusinessLineId(e.target.value ? e.target.value : null)}
               disabled={!canEdit}
               className={cls(
                 "mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold outline-none focus:ring-2 focus:ring-slate-200",
                 !canEdit ? "opacity-60 cursor-not-allowed" : ""
               )}
             >
-              <option value="">— Sin categoría —</option>
-              {cats.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.code} • {c.name}
+              <option value="">— Sin línea de negocio —</option>
+              {businessLines.map((bl) => (
+                <option key={bl.id} value={bl.id}>
+                  {bl.code} • {bl.name}
                 </option>
               ))}
             </select>
+            <div className="mt-1 text-xs text-slate-500">
+              Centro de utilidad por defecto para ventas de este artículo.
+            </div>
           </div>
 
           <div className="sm:col-span-4">

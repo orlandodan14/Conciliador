@@ -38,8 +38,9 @@ export default function Sidebar({ collapsed, onToggle }: Props) {
         title: "Gestión de Ventas",
         items: [
           { type: "link", label: "Clientes", href: "/gestionVentas/clientes" },
-          { type: "link", label: "Documentos Tributarios", href: "/gestionVentas/documentos-tributarios" },
-          { type: "link", label: "Pagos / Cobranza", href: "/gestionVentas/cobranza" },
+          { type: "link", label: "Doc. Tributarios Ventas", href: "/gestionVentas/docs-tribut-ventas" },
+          { type: "link", label: "Otros Docs. Ingresos", href: "/gestionVentas/otros-docs-ventas" },
+          { type: "link", label: "Cobros", href: "/gestionVentas/cobranza" },
         ],
       },
       {
@@ -86,7 +87,7 @@ export default function Sidebar({ collapsed, onToggle }: Props) {
               { type: "link", label: "Centros de Costos", href: "/configuracion/centros-costos" },
               { type: "link", label: "Centros de Utilidad", href: "/configuracion/centros-utilidad" },
               { type: "link", label: "Sucursales", href: "/configuracion/sucursales" },
-              { type: "link", label: "Articulos", href: "/configuracion/articulos" },
+              { type: "link", label: "Articulos de Venta", href: "/configuracion/articulos" },
               { type: "link", label: "Pol. de Imputación", href: "/configuracion/politicas-imputacion" },
             ],
           },
