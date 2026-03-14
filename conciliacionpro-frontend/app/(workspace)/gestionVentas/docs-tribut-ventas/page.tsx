@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabaseClient";
 import * as XLSX from "xlsx";
 import { CounterpartyCreateModal, Counterparty as CPCounterparty } from "@/app/(workspace)/components/counterparties/CounterpartyCreateModal";
 import { Pencil, CheckCircle2, Trash2 } from "lucide-react";
-import { TradeDocEditorModal } from "@/app/(workspace)/components/tradeDocs/TradeDocEditorModal";
+import { TradeDocEditorModal } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocEditorModal";
 
 /**
  * =========================
@@ -1208,7 +1208,7 @@ export default function Page() {
         const today = todayISO();
 
         const { data: pols, error: polErr } = await supabase
-          .from("account_posting_policies")
+          .from("account_imputation_policies")
           .select(`
             id,
             company_id,
@@ -1300,11 +1300,17 @@ export default function Page() {
     const byCode: Record<string, AccountPostingPolicyLite> = {};
 
     for (const p of accountPostingPolicies) {
-      const acc = accById[p.account_node_id];
-      if (acc?.code) {
-        byCode[String(acc.code).trim()] = p;
+      const acc = accById[String(p.account_node_id)];
+      const code = String(acc?.code || "").trim().toUpperCase();
+
+      if (code) {
+        byCode[code] = p;
       }
     }
+
+    console.log("POLICIES RAW", accountPostingPolicies);
+    console.log("ACCOUNTS BY ID", accById);
+    console.log("POLICY MAP BY CODE", byCode);
 
     setPostingPolicyByAccountCode(byCode);
   }, [accountPostingPolicies, accById]);
@@ -1462,19 +1468,7 @@ export default function Page() {
   // Journal
   function addJournalLine() {
     setJournalAutoMode(false);
-
-    const br = header.branch_id ? branchById[header.branch_id] : null;
-
-    setJournalLines((p) =>
-      renumber([
-        ...p,
-        {
-          ...makeJournalLine(p.length + 1),
-          branch_id: br?.id || null,
-          branch_code: br?.code || "",
-        },
-      ])
-    );
+    setJournalLines((p) => renumber([...p, makeJournalLine(p.length + 1)]));
   }
 
   function removeJournalLine(idx: number) {
@@ -1632,7 +1626,7 @@ export default function Page() {
   }
 
   function getPostingPolicyByAccountCode(accountCodeRaw: string): AccountPostingPolicyLite | null {
-    const accountCode = String(accountCodeRaw || "").trim();
+    const accountCode = String(accountCodeRaw || "").trim().toUpperCase();
     if (!accountCode) return null;
     return postingPolicyByAccountCode[accountCode] || null;
   }
@@ -1655,11 +1649,12 @@ export default function Page() {
   function normalizeLineDimensionsByPolicy(line: JournalLine): JournalLine {
     const next: JournalLine = { ...line };
 
-    const policy = getPostingPolicyByAccountCode(next.account_code);
+    const accountCode = String(next.account_code || "").trim().toUpperCase();
+    const policy = getPostingPolicyByAccountCode(accountCode);
     const defaultBU = getDefaultBusinessLineFromDoc();
     const docBranch = header.branch_id ? branchById[header.branch_id] : null;
 
-    // normalizar branch
+    // normalizar branch manual
     if (!next.branch_id && next.branch_code) {
       const br = branchByCode[String(next.branch_code).trim()];
       next.branch_id = br?.id || null;
@@ -1669,7 +1664,7 @@ export default function Page() {
       next.branch_code = br?.code || "";
     }
 
-    // normalizar CU
+    // normalizar CU manual
     if (!next.business_line_id && next.business_line_code) {
       const bu = businessLineByCode[String(next.business_line_code).trim()];
       next.business_line_id = bu?.id || null;
@@ -1679,14 +1674,28 @@ export default function Page() {
       next.business_line_code = bu?.code || "";
     }
 
-    // ✅ FORZAR SUCURSAL EN TODAS LAS CUENTAS
-    next.branch_id = docBranch?.id || null;
-    next.branch_code = docBranch?.code || "";
+    // si no hay policy, no tocar dimensiones
+    if (!policy) {
+      console.log("SIN POLICY PARA CUENTA", accountCode, postingPolicyByAccountCode);
+      return next;
+    }
 
-    // si no hay policy, no tocar CU
-    if (!policy) return next;
+    // SUCURSAL solo si la política lo exige
+    if (policy.require_suc) {
+      if (!header.branch_id || !docBranch) {
+        throw new Error(
+          `La cuenta ${accountCode} exige sucursal, pero el documento no tiene una sucursal válida en cabecera.`
+        );
+      }
 
-    // CU solo si la cuenta lo exige
+      next.branch_id = docBranch.id;
+      next.branch_code = docBranch.code || "";
+    } else {
+      next.branch_id = null;
+      next.branch_code = "";
+    }
+
+    // CU solo si la política lo exige
     if (policy.require_cu) {
       if (!next.business_line_id) {
         next.business_line_id = defaultBU?.id || null;
@@ -1704,6 +1713,15 @@ export default function Page() {
       next.cost_center_id = null;
       next.cost_center_code = "";
     }
+
+    console.log("normalizeLineDimensionsByPolicy", {
+      accountCode,
+      policy,
+      header_branch_id: header.branch_id,
+      docBranch,
+      result_branch_id: next.branch_id,
+      result_branch_code: next.branch_code,
+    });
 
     return next;
   }
@@ -1954,6 +1972,12 @@ export default function Page() {
         error: `Asiento no cuadra: Debe ${debe} ≠ Haber ${haber}`,
       };
     }
+
+    console.log("BUILD JOURNAL RAW", next);
+    console.log("HEADER BRANCH DEBUG", {
+      header_branch_id: header.branch_id,
+      docBranch: header.branch_id ? branchById[header.branch_id] : null,
+    });
 
     return {
       lines: next.map((x, i) => ({ ...x, line_no: i + 1 })),
