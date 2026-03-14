@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 /** Helper local */
 function cls(...a: Array<string | false | null | undefined>) {
@@ -251,6 +251,8 @@ export function TradeDocEditorModal(props: {
   docId: string | null;
   header: DocHeader;
   setHeader: React.Dispatch<React.SetStateAction<DocHeader>>;
+  headerBranchCode: string;
+  setHeaderBranchCode: (code: string) => void;
   editorTab: EditorTab;
   setEditorTab: React.Dispatch<React.SetStateAction<EditorTab>>;
 
@@ -338,6 +340,8 @@ export function TradeDocEditorModal(props: {
     docId,
     header,
     setHeader,
+    headerBranchCode,
+    setHeaderBranchCode,
     editorTab,
     setEditorTab,
     fiscalCfg,
@@ -402,6 +406,12 @@ export function TradeDocEditorModal(props: {
     []
   );
 
+  const [headerBranchInput, setHeaderBranchInput] = useState(headerBranchCode || "");
+
+  useEffect(() => {
+    setHeaderBranchInput(headerBranchCode || "");
+  }, [headerBranchCode]);
+
   function setHeaderPatch(patch: Partial<DocHeader>) {
     setHeader((h) => ({ ...h, ...patch }));
   }
@@ -435,8 +445,9 @@ export function TradeDocEditorModal(props: {
     }, [itemList]);
     
     const itemDatalistId = "dl-trade-doc-items";
-
     const journalAccountListId = "dl-journal-accounts";
+    const branchDatalistId = "dl-trade-doc-branches";
+    const businessLineDatalistId = "dl-trade-doc-business-lines";
 
     const journalSummary = useMemo(() => {
         const usedLines = journalLines.filter((l) => {
@@ -538,6 +549,25 @@ export function TradeDocEditorModal(props: {
                   {it.name}
                 </option>
               ))}
+            </datalist>
+
+            <datalist id={branchDatalistId}>
+              {branchList.map((b) => (
+                <option key={b.id} value={b.code}>
+                  {b.name}
+                </option>
+              ))}
+            </datalist>
+
+            <datalist id={businessLineDatalistId}>
+              {businessLines
+                .filter((x) => x.is_active)
+                .sort((a, b) => `${a.code} ${a.name}`.localeCompare(`${b.code} ${b.name}`))
+                .map((bu) => (
+                  <option key={bu.id} value={bu.code}>
+                    {bu.name}
+                  </option>
+                ))}
             </datalist>
             
       {/* Tabs */}
@@ -692,19 +722,24 @@ export function TradeDocEditorModal(props: {
                     <label className="block">
                       <LabelInline label="Sucursal" field="branch_id" />
                     </label>
-                    <select
+                    <input
                       className="mt-1 w-full rounded-lg border px-2 py-2 text-sm"
                       disabled={!canEdit}
-                      value={header.branch_id}
-                      onChange={(e) => setHeaderPatch({ branch_id: e.target.value })}
-                    >
-                      <option value="">Selecciona sucursal</option>
-                      {branchList.map((b) => (
-                        <option key={b.id} value={b.id}>
-                          {b.code} • {b.name}
-                        </option>
-                      ))}
-                    </select>
+                      value={headerBranchInput}
+                      list={branchDatalistId}
+                      onChange={(e) => setHeaderBranchInput(e.target.value)}
+                      onBlur={(e) => {
+                        const code = String(e.target.value || "").trim();
+                        setHeaderBranchInput(code);
+                        setHeaderBranchCode(code);
+                      }}
+                      placeholder="Código sucursal"
+                    />
+                    <div className="mt-1 text-[11px] text-slate-500 truncate">
+                      {headerBranchInput.trim()
+                        ? branchList.find((b) => b.code === headerBranchInput.trim())?.name || "—"
+                        : "—"}
+                    </div>
                   </div>
 
                   <div className="md:col-span-5">
@@ -1601,7 +1636,13 @@ export function TradeDocEditorModal(props: {
                             className={cellInputBase}
                             disabled={!canEdit}
                             value={l.business_line_code}
+                            list={businessLineDatalistId}
                             onChange={(e) => updateJournalLine(idx, { business_line_code: e.target.value })}
+                            onBlur={(e) =>
+                              updateJournalLine(idx, {
+                                business_line_code: String(e.target.value || "").trim(),
+                              })
+                            }
                             placeholder="CU"
                           />
                         </td>
@@ -1611,7 +1652,13 @@ export function TradeDocEditorModal(props: {
                             className={cellInputBase}
                             disabled={!canEdit}
                             value={l.branch_code}
+                            list={branchDatalistId}
                             onChange={(e) => updateJournalLine(idx, { branch_code: e.target.value })}
+                            onBlur={(e) =>
+                              updateJournalLine(idx, {
+                                branch_code: String(e.target.value || "").trim(),
+                              })
+                            }
                             placeholder="SUC"
                           />
                         </td>

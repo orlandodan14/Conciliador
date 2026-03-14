@@ -1393,6 +1393,15 @@ export default function Page() {
   function setHeaderPatch(patch: Partial<DocHeader>) {
     setHeader((h) => ({ ...h, ...patch }));
   }
+  function setHeaderBranchCode(rawCode: string) {
+    const typedCode = String(rawCode || "").trim();
+    const foundBranch = typedCode ? branchByCode[typedCode] : null;
+
+    setHeader((h) => ({
+      ...h,
+      branch_id: foundBranch?.id || "",
+    }));
+  }
   function renumber<T extends { line_no: number }>(arr: T[]) {
     return arr.map((x, i) => ({ ...x, line_no: i + 1 }));
   }
@@ -1521,8 +1530,8 @@ export default function Page() {
           next.business_line_code = foundBU?.code || "";
         }
 
-        // Aplicar política real de la cuenta
-        next = normalizeLineDimensionsByPolicy(next);
+        // En modo manual no forzamos dimensiones.
+        // Solo normalizamos ids/códigos si el usuario escribió algo válido.
 
         return next;
       })
@@ -1683,13 +1692,12 @@ export default function Page() {
     // SUCURSAL solo si la política lo exige
     if (policy.require_suc) {
       if (!header.branch_id || !docBranch) {
-        throw new Error(
-          `La cuenta ${accountCode} exige sucursal, pero el documento no tiene una sucursal válida en cabecera.`
-        );
+        next.branch_id = null;
+        next.branch_code = "";
+      } else {
+        next.branch_id = docBranch.id;
+        next.branch_code = docBranch.code || "";
       }
-
-      next.branch_id = docBranch.id;
-      next.branch_code = docBranch.code || "";
     } else {
       next.branch_id = null;
       next.branch_code = "";
@@ -3141,6 +3149,10 @@ export default function Page() {
     return map[header.doc_type];
   }, [header.doc_type]);
 
+  const headerBranchCode = useMemo(() => {
+    if (!header.branch_id) return "";
+    return branchById[header.branch_id]?.code || "";
+  }, [header.branch_id, branchById]);
   
   // =========================
   // Excel import handlers
@@ -3627,6 +3639,8 @@ export default function Page() {
         docId={docId}
         header={header}
         setHeader={setHeader}
+        headerBranchCode={headerBranchCode}
+        setHeaderBranchCode={setHeaderBranchCode}
         editorTab={editorTab}
         setEditorTab={setEditorTab}
         fiscalCfg={fiscalCfg}
