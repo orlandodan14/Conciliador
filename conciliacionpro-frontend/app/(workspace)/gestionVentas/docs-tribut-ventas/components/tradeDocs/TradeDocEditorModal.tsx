@@ -416,6 +416,60 @@ export function TradeDocEditorModal(props: {
     setHeader((h) => ({ ...h, ...patch }));
   }
 
+  function focusGridCell(grid: "lineas" | "asiento", row: number, col: number) {
+    if (row < 0 || col < 0) return;
+
+    const selector = [
+      `[data-grid="${grid}"]`,
+      `[data-row="${row}"]`,
+      `[data-col="${col}"]`,
+    ].join("");
+
+    const el = document.querySelector(selector) as HTMLElement | null;
+    if (!el) return;
+
+    el.focus();
+
+    if (el instanceof HTMLInputElement) {
+      try {
+        const len = el.value?.length ?? 0;
+        el.setSelectionRange(len, len);
+      } catch {}
+    }
+  }
+
+  function handleGridKeyDown(
+    e: React.KeyboardEvent<HTMLInputElement>,
+    grid: "lineas" | "asiento",
+    row: number,
+    col: number
+  ) {
+    const key = e.key;
+
+    if (key === "ArrowRight") {
+      e.preventDefault();
+      focusGridCell(grid, row, col + 1);
+      return;
+    }
+
+    if (key === "ArrowLeft") {
+      e.preventDefault();
+      focusGridCell(grid, row, col - 1);
+      return;
+    }
+
+    if (key === "ArrowDown") {
+      e.preventDefault();
+      focusGridCell(grid, row + 1, col);
+      return;
+    }
+
+    if (key === "ArrowUp") {
+      e.preventDefault();
+      focusGridCell(grid, row - 1, col);
+      return;
+    }
+  }
     const branchList = useMemo(
       () =>
         [...branches]
@@ -1089,6 +1143,10 @@ export function TradeDocEditorModal(props: {
                             value={l.sku}
                             disabled={!canEdit}
                             list={itemDatalistId}
+                            data-grid="lineas"
+                            data-row={idx}
+                            data-col={0}
+                            onKeyDown={(e) => handleGridKeyDown(e, "lineas", idx, 0)}
                             onChange={(e) => {
                               const rawSku = e.target.value;
                               const key = String(rawSku || "").trim().toUpperCase();
@@ -1115,15 +1173,15 @@ export function TradeDocEditorModal(props: {
                               const found = itemBySku[key];
                               if (!found) return;
 
-                                updateDocLine(idx, {
-                                  item_id: found.id,
-                                  sku: found.sku,
-                                  description: found.description || found.name || "",
-                                  unit_price: String(found.price_sale ?? ""),
-                                  is_taxable: !found.tax_exempt,
-                                  tax_rate: found.tax_exempt ? "0" : "19",
-                                });
-                             }}
+                              updateDocLine(idx, {
+                                item_id: found.id,
+                                sku: found.sku,
+                                description: found.description || found.name || "",
+                                unit_price: String(found.price_sale ?? ""),
+                                is_taxable: !found.tax_exempt,
+                                tax_rate: found.tax_exempt ? "0" : "19",
+                              });
+                            }}
                             placeholder="SKU"
                           />
                         </td>
@@ -1133,6 +1191,10 @@ export function TradeDocEditorModal(props: {
                             className={cellInputBase}
                             value={l.description}
                             disabled={!canEdit}
+                            data-grid="lineas"
+                            data-row={idx}
+                            data-col={1}
+                            onKeyDown={(e) => handleGridKeyDown(e, "lineas", idx, 1)}
                             onChange={(e) => updateDocLine(idx, { description: e.target.value })}
                             placeholder="Descripción"
                           />
@@ -1143,6 +1205,10 @@ export function TradeDocEditorModal(props: {
                             className={cls(cellInputBase, cellInputRight)}
                             value={l.qty}
                             disabled={!canEdit}
+                            data-grid="lineas"
+                            data-row={idx}
+                            data-col={2}
+                            onKeyDown={(e) => handleGridKeyDown(e, "lineas", idx, 2)}
                             onChange={(e) => updateDocLine(idx, { qty: e.target.value })}
                             inputMode="decimal"
                             placeholder="1"
@@ -1154,6 +1220,10 @@ export function TradeDocEditorModal(props: {
                             className={cls(cellInputBase, cellInputRight)}
                             value={l.unit_price}
                             disabled={!canEdit}
+                            data-grid="lineas"
+                            data-row={idx}
+                            data-col={3}
+                            onKeyDown={(e) => handleGridKeyDown(e, "lineas", idx, 3)}
                             onChange={(e) => updateDocLine(idx, { unit_price: e.target.value })}
                             inputMode="decimal"
                             placeholder="0"
@@ -1182,6 +1252,10 @@ export function TradeDocEditorModal(props: {
                             className={cls(cellInputBase, cellInputRight)}
                             disabled={!canEdit || l.is_taxable}
                             value={l.ex_override}
+                            data-grid="lineas"
+                            data-row={idx}
+                            data-col={4}
+                            onKeyDown={(e) => handleGridKeyDown(e, "lineas", idx, 4)}
                             onChange={(e) => updateDocLine(idx, { ex_override: e.target.value })}
                             inputMode="decimal"
                             placeholder={formatNumber(ex, moneyDecimals)}
@@ -1193,6 +1267,10 @@ export function TradeDocEditorModal(props: {
                             className={cls(cellInputBase, cellInputRight)}
                             disabled={!canEdit || !l.is_taxable}
                             value={l.af_override}
+                            data-grid="lineas"
+                            data-row={idx}
+                            data-col={5}
+                            onKeyDown={(e) => handleGridKeyDown(e, "lineas", idx, 5)}
                             onChange={(e) => updateDocLine(idx, { af_override: e.target.value })}
                             inputMode="decimal"
                             placeholder={formatNumber(af, moneyDecimals)}
@@ -1204,6 +1282,10 @@ export function TradeDocEditorModal(props: {
                             className={cls(cellInputBase, cellInputRight)}
                             value={l.tax_rate}
                             disabled={!canEdit || !l.is_taxable}
+                            data-grid="lineas"
+                            data-row={idx}
+                            data-col={6}
+                            onKeyDown={(e) => handleGridKeyDown(e, "lineas", idx, 6)}
                             onChange={(e) => updateDocLine(idx, { tax_rate: e.target.value })}
                             inputMode="decimal"
                             placeholder="19"
@@ -1224,6 +1306,10 @@ export function TradeDocEditorModal(props: {
                             className={cls(cellInputBase, cellInputRight)}
                             disabled={!canEdit}
                             value={l.total_override}
+                            data-grid="lineas"
+                            data-row={idx}
+                            data-col={7}
+                            onKeyDown={(e) => handleGridKeyDown(e, "lineas", idx, 7)}
                             onChange={(e) => updateDocLine(idx, { total_override: e.target.value })}
                             inputMode="decimal"
                             placeholder={formatNumber(total_display, moneyDecimals)}
@@ -1577,6 +1663,10 @@ export function TradeDocEditorModal(props: {
                             className={cellInputBase}
                             disabled={!canEdit}
                             value={l.account_code}
+                            data-grid="asiento"
+                            data-row={idx}
+                            data-col={0}
+                            onKeyDown={(e) => handleGridKeyDown(e, "asiento", idx, 0)}
                             onChange={(e) => updateJournalLine(idx, { account_code: e.target.value })}
                             onBlur={(e) =>
                               updateJournalLine(idx, {
@@ -1604,6 +1694,10 @@ export function TradeDocEditorModal(props: {
                             className={cellInputBase}
                             disabled={!canEdit}
                             value={l.description}
+                            data-grid="asiento"
+                            data-row={idx}
+                            data-col={1}
+                            onKeyDown={(e) => handleGridKeyDown(e, "asiento", idx, 1)}
                             onChange={(e) => updateJournalLine(idx, { description: e.target.value })}
                             placeholder="Glosa línea asiento"
                           />
@@ -1614,6 +1708,10 @@ export function TradeDocEditorModal(props: {
                             className={cls(cellInputBase, cellInputRight)}
                             disabled={!canEdit}
                             value={l.debit}
+                            data-grid="asiento"
+                            data-row={idx}
+                            data-col={2}
+                            onKeyDown={(e) => handleGridKeyDown(e, "asiento", idx, 2)}
                             onChange={(e) => updateJournalLine(idx, { debit: e.target.value })}
                             inputMode="decimal"
                             placeholder="0"
@@ -1625,6 +1723,10 @@ export function TradeDocEditorModal(props: {
                             className={cls(cellInputBase, cellInputRight)}
                             disabled={!canEdit}
                             value={l.credit}
+                            data-grid="asiento"
+                            data-row={idx}
+                            data-col={3}
+                            onKeyDown={(e) => handleGridKeyDown(e, "asiento", idx, 3)}
                             onChange={(e) => updateJournalLine(idx, { credit: e.target.value })}
                             inputMode="decimal"
                             placeholder="0"
@@ -1637,6 +1739,10 @@ export function TradeDocEditorModal(props: {
                             disabled={!canEdit}
                             value={l.business_line_code}
                             list={businessLineDatalistId}
+                            data-grid="asiento"
+                            data-row={idx}
+                            data-col={4}
+                            onKeyDown={(e) => handleGridKeyDown(e, "asiento", idx, 4)}
                             onChange={(e) => updateJournalLine(idx, { business_line_code: e.target.value })}
                             onBlur={(e) =>
                               updateJournalLine(idx, {
@@ -1653,6 +1759,10 @@ export function TradeDocEditorModal(props: {
                             disabled={!canEdit}
                             value={l.branch_code}
                             list={branchDatalistId}
+                            data-grid="asiento"
+                            data-row={idx}
+                            data-col={5}
+                            onKeyDown={(e) => handleGridKeyDown(e, "asiento", idx, 5)}
                             onChange={(e) => updateJournalLine(idx, { branch_code: e.target.value })}
                             onBlur={(e) =>
                               updateJournalLine(idx, {
