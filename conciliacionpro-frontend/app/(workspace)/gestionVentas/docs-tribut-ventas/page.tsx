@@ -807,13 +807,13 @@ export default function Page() {
     origin_label: "",
   });
 
-  const [lines, setLines] = useState<DocLine[]>(Array.from({ length: 8 }, (_, i) => makeDocLine(i + 1)));
+  const [lines, setLines] = useState<DocLine[]>(Array.from({ length: 4 }, (_, i) => makeDocLine(i + 1)));
 
   // ✅ Default: Crédito (sin pagos)
   const [payments, setPayments] = useState<PaymentRow[]>([]);
 
   const [journalLines, setJournalLines] = useState<JournalLine[]>(
-    Array.from({ length: 8 }, (_, i) => makeJournalLine(i + 1))
+    Array.from({ length: 4 }, (_, i) => makeJournalLine(i + 1))
   );
 
   const [journalAutoMode, setJournalAutoMode] = useState(true);
@@ -1347,7 +1347,7 @@ export default function Page() {
     });
 
     if (!hasMeaningfulLines) {
-      setJournalLines(Array.from({ length: 8 }, (_, i) => makeJournalLine(i + 1)));
+      setJournalLines(Array.from({ length: 4 }, (_, i) => makeJournalLine(i + 1)));
       return;
     }
 
@@ -2187,13 +2187,13 @@ export default function Page() {
     });
 
     setLines(
-      Array.from({ length: 8 }, (_, i) => ({
+      Array.from({ length: 4 }, (_, i) => ({
         ...makeDocLine(i + 1),
         tax_rate: defaultTaxRate || "19",
       }))
     );
     setPayments([]);
-    setJournalLines(Array.from({ length: 8 }, (_, i) => makeJournalLine(i + 1)));
+    setJournalLines(Array.from({ length: 4 }, (_, i) => makeJournalLine(i + 1)));
 
     setMessages([]);
     setOriginPanelOpen(false);
@@ -2924,7 +2924,7 @@ export default function Page() {
           ? renumber(parsedLines)
           : renumber([
               ...parsedLines,
-              ...Array.from({ length: 8 - parsedLines.length }, (_, i) => makeDocLine(parsedLines.length + i + 1)),
+              ...Array.from({ length: 4 - parsedLines.length }, (_, i) => makeDocLine(parsedLines.length + i + 1)),
             ])
       );
 
@@ -3007,7 +3007,7 @@ export default function Page() {
           : renumber([
               ...draftJournalLines,
               ...Array.from(
-                { length: Math.max(8 - draftJournalLines.length, 0) },
+                { length: Math.max(4 - draftJournalLines.length, 0) },
                 (_, i) => makeJournalLine(draftJournalLines.length + i + 1)
               ),
             ])
@@ -3154,6 +3154,25 @@ export default function Page() {
     return branchById[header.branch_id]?.code || "";
   }, [header.branch_id, branchById]);
   
+  const accountPolicyByCode = useMemo(() => {
+    const map: Record<
+      string,
+      {
+        require_cu: boolean;
+        require_suc: boolean;
+      }
+    > = {};
+
+    for (const [code, policy] of Object.entries(postingPolicyByAccountCode)) {
+      map[String(code).trim()] = {
+        require_cu: Boolean(policy?.require_cu),
+        require_suc: Boolean(policy?.require_suc),
+      };
+    }
+
+    return map;
+  }, [postingPolicyByAccountCode]);
+
   // =========================
   // Excel import handlers
   // =========================
@@ -3679,6 +3698,7 @@ export default function Page() {
         recalcJournalAuto={recalcJournalAuto}
         accounts={accounts}
         accByCode={accByCode}
+        accountPolicyByCode={accountPolicyByCode}
         headerCell={headerCell}
         headerSub={headerSub}
         bodyCell={bodyCell}

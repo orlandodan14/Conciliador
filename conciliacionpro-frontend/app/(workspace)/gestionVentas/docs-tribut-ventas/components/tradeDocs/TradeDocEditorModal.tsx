@@ -304,6 +304,14 @@ export function TradeDocEditorModal(props: {
   accounts: Array<{ id: string; code: string; name: string }>;
   accByCode: Record<string, { id: string; code: string; name: string }>;
 
+  accountPolicyByCode: Record<
+    string,
+    {
+      require_cu: boolean;
+      require_suc: boolean;
+    }
+  >;
+
   // helpers visuales
   headerCell: string;
   headerSub: string;
@@ -379,6 +387,7 @@ export function TradeDocEditorModal(props: {
     recalcJournalAuto,
     accounts,
     accByCode,
+    accountPolicyByCode,
     headerCell,
     headerSub,
     bodyCell,
@@ -531,6 +540,127 @@ export function TradeDocEditorModal(props: {
         };
     }, [journalLines]);
     
+    const usedJournalLines = useMemo(() => {
+      return journalLines.filter((l) => {
+        return (
+          String(l.account_code || "").trim() ||
+          String(l.description || "").trim() ||
+          String(l.debit || "").trim() ||
+          String(l.credit || "").trim() ||
+          String(l.business_line_code || "").trim() ||
+          String(l.branch_code || "").trim()
+        );
+      });
+    }, [journalLines]);
+
+    const seatHasData = usedJournalLines.length > 0;
+
+    const documentLinesTotal = useMemo(() => {
+      return lines.reduce((sum, l) => {
+        const { total } = calcLineAmounts(l);
+        return sum + Number(total || 0);
+      }, 0);
+    }, [lines, calcLineAmounts]);
+
+    const seatValidation = useMemo(() => {
+      if (!seatHasData) {
+        return {
+          hasData: false,
+          hasErrors: false,
+          debit: 0,
+          credit: 0,
+          diff: 0,
+          absDiff: 0,
+          documentTotal: documentLinesTotal,
+          journalTotal: 0,
+          journalVsDocDiff: 0,
+          missingSucRows: [] as number[],
+          missingCuRows: [] as number[],
+          unbalanced: false,
+          totalMismatch: false,
+          messages: [] as string[],
+        };
+      }
+
+      const debit = usedJournalLines.reduce((s, l) => s + toNum(l.debit), 0);
+      const credit = usedJournalLines.reduce((s, l) => s + toNum(l.credit), 0);
+      const diff = debit - credit;
+      const absDiff = Math.abs(diff);
+
+      const journalTotal = credit;
+      const journalVsDocDiff = journalTotal - documentLinesTotal;
+      const absJournalVsDocDiff = Math.abs(journalVsDocDiff);
+
+      const missingSucRows: number[] = [];
+      const missingCuRows: number[] = [];
+
+      usedJournalLines.forEach((l, visibleIdx) => {
+        const accountCode = String(l.account_code || "").trim();
+        if (!accountCode) return;
+
+        const policy = accountPolicyByCode[accountCode];
+        if (!policy) return;
+
+        if (policy.require_suc && !String(l.branch_code || "").trim()) {
+          missingSucRows.push(visibleIdx);
+        }
+
+        if (policy.require_cu && !String(l.business_line_code || "").trim()) {
+          missingCuRows.push(visibleIdx);
+        }
+      });
+
+      const messages: string[] = [];
+
+      if (absDiff >= 0.5) {
+        messages.push(
+          `Debe y Haber no cuadran. Diferencia: ${formatNumber(absDiff, moneyDecimals)}.`
+        );
+      }
+
+      if (absJournalVsDocDiff >= 0.5) {
+        messages.push(
+          `El total del asiento no coincide con el total del documento. Diferencia: ${formatNumber(absJournalVsDocDiff, moneyDecimals)}.`
+        );
+      }
+
+      if (missingSucRows.length > 0) {
+        messages.push(
+          `Hay ${missingSucRows.length} línea(s) con cuentas que exigen sucursal y no tienen SUC.`
+        );
+      }
+
+      if (missingCuRows.length > 0) {
+        messages.push(
+          `Hay ${missingCuRows.length} línea(s) con cuentas que exigen centro de utilidad y no tienen CU.`
+        );
+      }
+
+      return {
+        hasData: true,
+        hasErrors: messages.length > 0,
+        debit,
+        credit,
+        diff,
+        absDiff,
+        documentTotal: documentLinesTotal,
+        journalTotal,
+        journalVsDocDiff,
+        missingSucRows,
+        missingCuRows,
+        unbalanced: absDiff >= 0.5,
+        totalMismatch: absJournalVsDocDiff >= 0.5,
+        messages,
+      };
+    }, [
+      seatHasData,
+      usedJournalLines,
+      documentLinesTotal,
+      accountPolicyByCode,
+      formatNumber,
+      moneyDecimals,
+    ]);
+
   return (
     <EditorShellModal
       open={open}
@@ -570,10 +700,18 @@ export function TradeDocEditorModal(props: {
             </button>
 
             <button
-              className={cls(theme.btnSoft, !canEdit && "opacity-60 cursor-not-allowed")}
-              disabled={!canEdit}
+              className={cls(
+                theme.btnSoft,
+                (!canEdit || seatValidation.hasErrors) && "opacity-60 cursor-not-allowed"
+              )}
+              disabled={!canEdit || seatValidation.hasErrors}
               onClick={saveDraftMVP}
               type="button"
+              title={
+                seatValidation.hasErrors
+                  ? "Corrige las validaciones del asiento antes de guardar."
+                  : "Guardar borrador"
+              }
             >
               Guardar borrador
             </button>
@@ -1654,6 +1792,21 @@ export function TradeDocEditorModal(props: {
                 <tbody>
                   {journalLines.map((l, idx) => {
                     const rowBg = idx % 2 === 0 ? "bg-slate-50/80" : "bg-slate-100/50";
+
+                    const accountCode = String(l.account_code || "").trim();
+                    const policy = accountPolicyByCode[accountCode];
+
+                    const missingSuc = Boolean(
+                      seatValidation.hasData &&
+                        policy?.require_suc &&
+                        !String(l.branch_code || "").trim()
+                    );
+
+                    const missingCu = Boolean(
+                      seatValidation.hasData &&
+                        policy?.require_cu &&
+                        !String(l.business_line_code || "").trim()
+                    );
                     return (
                       <tr key={idx} className={cls(rowBg, "hover:bg-sky-50/30")}>
                         <td className={cls(bodyCell, "text-slate-600 text-xs text-center")}>{l.line_no}</td>
@@ -1705,7 +1858,13 @@ export function TradeDocEditorModal(props: {
 
                         <td className={bodyCell}>
                           <input
-                            className={cls(cellInputBase, cellInputRight)}
+                            className={cls(
+                              cellInputBase,
+                              cellInputRight,
+                              seatValidation.hasData &&
+                                seatValidation.unbalanced &&
+                                "border-rose-300 bg-rose-50 text-rose-900"
+                            )}
                             disabled={!canEdit}
                             value={l.debit}
                             data-grid="asiento"
@@ -1720,7 +1879,13 @@ export function TradeDocEditorModal(props: {
 
                         <td className={bodyCell}>
                           <input
-                            className={cls(cellInputBase, cellInputRight)}
+                            className={cls(
+                              cellInputBase,
+                              cellInputRight,
+                              seatValidation.hasData &&
+                                seatValidation.unbalanced &&
+                                "border-rose-300 bg-rose-50 text-rose-900"
+                            )}
                             disabled={!canEdit}
                             value={l.credit}
                             data-grid="asiento"
@@ -1735,7 +1900,10 @@ export function TradeDocEditorModal(props: {
 
                         <td className={bodyCell}>
                           <input
-                            className={cellInputBase}
+                            className={cls(
+                              cellInputBase,
+                              missingCu && "border-rose-300 bg-rose-50 text-rose-900"
+                            )}
                             disabled={!canEdit}
                             value={l.business_line_code}
                             list={businessLineDatalistId}
@@ -1755,7 +1923,10 @@ export function TradeDocEditorModal(props: {
 
                         <td className={bodyCell}>
                           <input
-                            className={cellInputBase}
+                            className={cls(
+                              cellInputBase,
+                              missingSuc && "border-rose-300 bg-rose-50 text-rose-900"
+                            )}
                             disabled={!canEdit}
                             value={l.branch_code}
                             list={branchDatalistId}
@@ -1794,8 +1965,52 @@ export function TradeDocEditorModal(props: {
               </table>
             </div>
 
-            <div className="px-4 py-3 border-t bg-white text-sm text-slate-700">
-                <b>Validación:</b> el asiento debe cuadrar. Si existe diferencia entre Debe y Haber, se mostrará el descuadre y no se podrá registrar como vigente.
+            <div className="px-4 py-2 border-t bg-white">
+              {!seatValidation.hasData ? (
+                <div className="text-[11px] text-slate-500">
+                  <b>Validación:</b> cuando el asiento tenga datos, se revisará descuadre, diferencia contra el documento y dimensiones obligatorias.
+                </div>
+              ) : seatValidation.hasErrors ? (
+                <div className="space-y-1 text-[11px] text-rose-700">
+                  <div className="font-semibold">Validaciones pendientes:</div>
+
+                  <div className="flex flex-wrap gap-x-3 gap-y-1">
+                    {seatValidation.unbalanced ? (
+                      <span>
+                        • Debe/Haber descuadrado:{" "}
+                        <b>{formatNumber(seatValidation.absDiff, moneyDecimals)}</b>
+                      </span>
+                    ) : null}
+
+                    {seatValidation.totalMismatch ? (
+                      <span>
+                        • Documento vs asiento:{" "}
+                        <b>{formatNumber(Math.abs(seatValidation.journalVsDocDiff), moneyDecimals)}</b>
+                      </span>
+                    ) : null}
+
+                    {seatValidation.missingCuRows.length > 0 ? (
+                      <span>
+                        • Sin CU: <b>{seatValidation.missingCuRows.length}</b>
+                      </span>
+                    ) : null}
+
+                    {seatValidation.missingSucRows.length > 0 ? (
+                      <span>
+                        • Sin SUC: <b>{seatValidation.missingSucRows.length}</b>
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="text-[10px] text-rose-600">
+                    No se puede guardar borrador hasta corregir estas validaciones.
+                  </div>
+                </div>
+              ) : (
+                <div className="text-[11px] text-emerald-700">
+                  <b>Validación:</b> asiento correcto. No hay errores visuales.
+                </div>
+              )}
             </div>
           </div>
         </div>
