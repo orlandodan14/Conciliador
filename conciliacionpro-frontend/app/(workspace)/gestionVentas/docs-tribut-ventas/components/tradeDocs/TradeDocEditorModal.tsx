@@ -36,13 +36,24 @@ export type DocHeader = {
   counterparty_name: string;
 
   reference: string;
-  notes: string;
 
   cancelled_at: string;
   cancel_reason: string;
 
   origin_doc_id: string | null;
   origin_label: string;
+
+  origin_doc_type?: DocType | null;
+  origin_fiscal_doc_code?: string | null;
+  origin_issue_date?: string | null;
+  origin_currency_code?: string | null;
+  origin_net_taxable?: number | null;
+  origin_net_exempt?: number | null;
+  origin_tax_total?: number | null;
+  origin_grand_total?: number | null;
+  origin_balance?: number | null;
+  origin_payment_status?: "PAGADO" | "PARCIAL" | "PENDIENTE" | null;
+  origin_status?: DocStatus | "PAGADO" | "PARCIAL" | "PENDIENTE" | null;
 };
 
 export type FiscalDocTypeLite = {
@@ -57,6 +68,10 @@ export type FiscalDocSettingsLite = {
   enabled: boolean;
   require_sales: boolean;
   default_sales_doc_type_id: string | null;
+
+  default_sales_invoice_doc_type_id: string | null;
+  default_sales_debit_note_doc_type_id: string | null;
+  default_sales_credit_note_doc_type_id: string | null;
 };
 
 export type BranchLite = {
@@ -126,11 +141,23 @@ export type JournalLine = {
 
 export type OriginDocLite = {
   id: string;
+  doc_type?: DocType | null;
+  fiscal_doc_code?: string | null;
   series?: string | null;
   number?: string | null;
   issue_date?: string | null;
+
+  counterparty_identifier?: string | null;
+
+  net_taxable?: number | null;
+  net_exempt?: number | null;
+  tax_total?: number | null;
   grand_total?: number | null;
+  balance?: number | null;
+
   currency_code?: string | null;
+  payment_status?: "PAGADO" | "PARCIAL" | "PENDIENTE" | null;
+  status?: DocStatus | "PAGADO" | "PARCIAL" | "PENDIENTE" | null;
 };
 
 export type EditorTab = "CABECERA" | "LINEAS" | "PAGOS" | "ASIENTO";
@@ -188,6 +215,7 @@ function EditorShellModal({
   glowBClassName: string;
 }) {
   if (!open) return null;
+  
 
   return (
     <div className="fixed inset-0 z-50">
@@ -271,14 +299,8 @@ export function TradeDocEditorModal(props: {
 
   // origin
   needsOrigin: boolean;
-  originPanelOpen: boolean;
-  setOriginPanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  originQuery: string;
-  setOriginQuery: React.Dispatch<React.SetStateAction<string>>;
-  originLoading: boolean;
-  originResults: OriginDocLite[];
-  searchOriginDocs: () => Promise<void>;
-  pickOrigin: (d: OriginDocLite) => void;
+  onOpenOriginSearch: () => void;
+  clearOrigin: () => void;
 
   // líneas
   lines: DocLine[];
@@ -331,10 +353,11 @@ export function TradeDocEditorModal(props: {
   ellipsis: (s: string, max: number) => string;
   folioLabel: (series?: string | null, number?: string | null) => string;
 
-  // acciones
-  saveDraftMVP: () => Promise<void>;
-  markAsVigenteMVP: () => Promise<void>;
-  cancelDocMVP: () => Promise<void>;
+    // acciones
+    saveDraftMVP: () => Promise<void>;
+    markAsVigenteMVP: () => Promise<void>;
+    deleteDraftMVP: () => Promise<void>;
+    cancelDocMVP: () => Promise<void>;
 }) {
   const {
     open,
@@ -363,14 +386,8 @@ export function TradeDocEditorModal(props: {
     openCreateCounterparty,
     resolveCounterpartyHeader,
     needsOrigin,
-    originPanelOpen,
-    setOriginPanelOpen,
-    originQuery,
-    setOriginQuery,
-    originLoading,
-    originResults,
-    searchOriginDocs,
-    pickOrigin,
+    onOpenOriginSearch,
+    clearOrigin,
     lines,
     addDocLine,
     removeDocLine,
@@ -402,6 +419,8 @@ export function TradeDocEditorModal(props: {
     ellipsis,
     folioLabel,
     saveDraftMVP,
+    markAsVigenteMVP,
+    deleteDraftMVP,
     cancelDocMVP,
   } = props;
 
@@ -417,13 +436,83 @@ export function TradeDocEditorModal(props: {
 
   const [headerBranchInput, setHeaderBranchInput] = useState(headerBranchCode || "");
 
+  const fiscalDocTypeById = useMemo(() => {
+    const map: Record<string, FiscalDocTypeLite> = {};
+    for (const t of fiscalDocTypes) {
+      map[t.id] = t;
+    }
+    return map;
+  }, [fiscalDocTypes]);
+
+  function getDefaultFiscalDocTypeIdByDocType(docType: DocType): string | null {
+    if (docType === "INVOICE") {
+      return (
+        fiscalCfg.default_sales_invoice_doc_type_id ||
+        fiscalCfg.default_sales_doc_type_id ||
+        null
+      );
+    }
+
+    if (docType === "DEBIT_NOTE") {
+      return fiscalCfg.default_sales_debit_note_doc_type_id || null;
+    }
+
+    if (docType === "CREDIT_NOTE") {
+      return fiscalCfg.default_sales_credit_note_doc_type_id || null;
+    }
+
+    return null;
+  }
+
+  function getDefaultFiscalDocCodeByDocType(docType: DocType): string {
+    const defaultId = getDefaultFiscalDocTypeIdByDocType(docType);
+    if (!defaultId) return "";
+
+    const found = fiscalDocTypeById[defaultId];
+    if (!found || !found.is_active) return "";
+
+    return found.code || "";
+  }
+
   useEffect(() => {
     setHeaderBranchInput(headerBranchCode || "");
   }, [headerBranchCode]);
 
+  useEffect(() => {
+    if (!open) return;
+    if (!fiscalCfg.enabled) return;
+    if (docId) return; // solo nuevo documento
+    if (String(header.fiscal_doc_code || "").trim()) return;
+
+    const defaultCode = getDefaultFiscalDocCodeByDocType(header.doc_type);
+    if (!defaultCode) return;
+
+    setHeader((h) => {
+      if (String(h.fiscal_doc_code || "").trim()) return h;
+      return {
+        ...h,
+        fiscal_doc_code: defaultCode,
+      };
+    });
+  }, [
+    open,
+    docId,
+    header.doc_type,
+    header.fiscal_doc_code,
+    fiscalCfg.enabled,
+    fiscalCfg.default_sales_doc_type_id,
+    fiscalCfg.default_sales_invoice_doc_type_id,
+    fiscalCfg.default_sales_debit_note_doc_type_id,
+    fiscalCfg.default_sales_credit_note_doc_type_id,
+    fiscalDocTypeById,
+    setHeader,
+  ]);
+
   function setHeaderPatch(patch: Partial<DocHeader>) {
     setHeader((h) => ({ ...h, ...patch }));
   }
+
+  
 
   function focusGridCell(grid: "lineas" | "asiento", row: number, col: number) {
     if (row < 0 || col < 0) return;
@@ -661,6 +750,29 @@ export function TradeDocEditorModal(props: {
       moneyDecimals,
     ]);
 
+    async function handleRegisterDirect() {
+      if (!canEdit || seatValidation.hasErrors) return;
+
+      const ok = window.confirm(
+        "¿Registrar este documento ahora? Se contabilizará directamente y dejará de estar en borrador."
+      );
+      if (!ok) return;
+
+      await markAsVigenteMVP();
+    }
+
+    const counterpartyIdentifierFilled = Boolean(
+      String(header.counterparty_identifier || "").trim()
+    );
+
+    const canSearchOriginDoc =
+      canEdit &&
+      (
+        header.doc_type === "INVOICE" ||
+        counterpartyIdentifierFilled
+      );
+
+
   return (
     <EditorShellModal
       open={open}
@@ -716,6 +828,35 @@ export function TradeDocEditorModal(props: {
               Guardar borrador
             </button>
 
+            <button
+              className={cls(
+                theme.btnPrimary,
+                (!canEdit || seatValidation.hasErrors) && "opacity-60 cursor-not-allowed"
+              )}
+              disabled={!canEdit || seatValidation.hasErrors}
+              onClick={handleRegisterDirect}
+              type="button"
+              title={
+                seatValidation.hasErrors
+                  ? "Corrige las validaciones del asiento antes de registrar."
+                  : "Registrar y contabilizar"
+              }
+            >
+              Registrar
+            </button>
+
+            <button
+              className={cls(
+                "rounded-lg bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-700",
+                (!canEdit || !docId) && "opacity-60 cursor-not-allowed"
+              )}
+              disabled={!canEdit || !docId}
+              onClick={deleteDraftMVP}
+              type="button"
+              title={!docId ? "Este documento aún no existe en la base de datos." : "Eliminar borrador"}
+            >
+              Eliminar
+            </button>
 
             {showCancelButton ? (
               <button className={theme.btnSoft} onClick={cancelDocMVP} type="button">
@@ -771,7 +912,6 @@ export function TradeDocEditorModal(props: {
               type="button"
               onClick={() => {
                 setEditorTab(t.key);
-                if (t.key !== "CABECERA") setOriginPanelOpen(false);
               }}
               className={cls(
                 "rounded-2xl px-4 py-2 text-[12px] font-extrabold transition ring-1",
@@ -818,12 +958,34 @@ export function TradeDocEditorModal(props: {
                         value={header.doc_type}
                         onChange={(e) => {
                           const v = e.target.value as DocType;
-                          setHeaderPatch({
-                            doc_type: v,
-                            origin_doc_id: v === "CREDIT_NOTE" || v === "DEBIT_NOTE" ? header.origin_doc_id : null,
-                            origin_label: v === "CREDIT_NOTE" || v === "DEBIT_NOTE" ? header.origin_label : "",
-                          });
-                          if (v !== "CREDIT_NOTE" && v !== "DEBIT_NOTE") setOriginPanelOpen(false);
+                          const defaultFiscalCode = fiscalCfg.enabled
+                            ? getDefaultFiscalDocCodeByDocType(v)
+                            : header.fiscal_doc_code;
+
+                          if (v === "CREDIT_NOTE" || v === "DEBIT_NOTE") {
+                            setHeaderPatch({
+                              doc_type: v,
+                              fiscal_doc_code: defaultFiscalCode,
+                            });
+                          } else {
+                            setHeaderPatch({
+                              doc_type: v,
+                              fiscal_doc_code: defaultFiscalCode,
+                              origin_doc_id: null,
+                              origin_label: "",
+                              origin_doc_type: null,
+                              origin_fiscal_doc_code: null,
+                              origin_issue_date: null,
+                              origin_currency_code: null,
+                              origin_net_taxable: null,
+                              origin_net_exempt: null,
+                              origin_tax_total: null,
+                              origin_grand_total: null,
+                              origin_balance: null,
+                              origin_payment_status: null,
+                              origin_status: null,
+                            });
+                          }
                         }}
                       >
                         <option value="INVOICE">DOCUMENTO (INGRESO)</option>
@@ -1011,43 +1173,47 @@ export function TradeDocEditorModal(props: {
                 />
               </div>
 
-              <div className="md:col-span-4">
-                <label className="block">
-                  <LabelInline label="Notas" field="notes" />
-                </label>
-                <textarea
-                  className="mt-1 w-full rounded-lg border px-2 py-2 text-sm max-h-[38px]"
-                  disabled={!canEdit}
-                  value={header.notes}
-                  onChange={(e) => setHeaderPatch({ notes: e.target.value })}
-                  placeholder="Observaciones internas..."
-                />
-              </div>
             </div>
 
             {/* ORIGEN NC/ND */}
             {needsOrigin ? (
               <div className="px-4 pb-4">
-                <div className="rounded-2xl border bg-slate-50 p-3">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="rounded-2xl border bg-slate-50 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <div className="text-sm font-semibold text-slate-900">Documento origen (NC/ND)</div>
-                      <div className="text-[11px] text-slate-600">Busca por folio/serie/número y asigna la NC/ND.</div>
+                      <div className="text-sm font-semibold text-slate-900">
+                        Documento origen (obligatorio para NC/ND)
+                      </div>
+                      <div className="text-[11px] text-slate-600">
+                        La nota solo puede afectar documentos del mismo RUT/ID de la cabecera.
+                      </div>
                     </div>
 
                     <div className="flex gap-2">
                       <button
-                        className={cls(theme.btnSoft, !canEdit ? "opacity-60 cursor-not-allowed" : "hover:bg-white")}
-                        disabled={!canEdit}
+                        className={cls(
+                          theme.btnSoft,
+                          !canSearchOriginDoc ? "opacity-60 cursor-not-allowed" : "hover:bg-white"
+                        )}
+                        disabled={!canSearchOriginDoc}
                         type="button"
-                        onClick={() => {
-                          setOriginPanelOpen((v) => !v);
-                          // limpiar búsqueda visual
-                          // (los resultados se manejan en Page; aquí solo controlamos el panel)
-                        }}
+                        onClick={onOpenOriginSearch}
+                        title={
+                          !counterpartyIdentifierFilled && header.doc_type !== "INVOICE"
+                            ? "Primero ingresa el RUT/NIT/RFC de la contraparte para buscar el documento origen."
+                            : header.origin_doc_id
+                            ? "Cambiar documento origen"
+                            : "Buscar documento origen"
+                        }
                       >
-                        {originPanelOpen ? "Cerrar búsqueda" : "Buscar"}
+                        {header.origin_doc_id ? "Cambiar documento" : "Buscar documento"}
                       </button>
+
+                      {!counterpartyIdentifierFilled && header.doc_type !== "INVOICE" ? (
+                        <div className="mt-2 text-[11px] text-amber-700">
+                          Primero debes ingresar el RUT/NIT/RFC de la contraparte para habilitar la búsqueda del documento origen.
+                        </div>
+                      ) : null}
 
                       {header.origin_doc_id ? (
                         <button
@@ -1057,7 +1223,7 @@ export function TradeDocEditorModal(props: {
                           )}
                           disabled={!canEdit}
                           type="button"
-                          onClick={() => setHeaderPatch({ origin_doc_id: null, origin_label: "" })}
+                          onClick={clearOrigin}
                         >
                           Quitar
                         </button>
@@ -1065,115 +1231,156 @@ export function TradeDocEditorModal(props: {
                     </div>
                   </div>
 
-                  <div className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-2">
-                    <div className="md:col-span-2">
-                      <div className="text-[11px] text-slate-600">Asignado</div>
-                      <div className="mt-1 rounded-lg border bg-white px-3 py-2 text-sm">
-                        {header.origin_doc_id ? (
-                          <span>
-                            <b>{header.origin_label || "Documento"}</b>{" "}
-                            <span className="text-slate-500">— id {header.origin_doc_id.slice(0, 8)}…</span>
-                          </span>
-                        ) : (
-                          <span className="text-slate-500">Sin documento origen.</span>
-                        )}
+                  {!header.origin_doc_id ? (
+                    <div className="mt-3 rounded-xl border border-dashed bg-white px-4 py-4 text-sm text-slate-500">
+                      Sin documento origen asignado.
+                    </div>
+                  ) : (
+                    <div className="mt-3 rounded-xl border bg-white overflow-hidden">
+                      <div className="border-t border-slate-200 overflow-x-hidden">
+                        <div className="overflow-hidden">
+                          <table className="w-full table-fixed border-collapse text-sm">
+                            <colgroup>
+                              <col style={{ width: "13%" }} />
+                              <col style={{ width: "10%" }} />
+                              <col style={{ width: "22%" }} />
+                              <col style={{ width: "13%" }} />
+                              <col style={{ width: "13%" }} />
+                              <col style={{ width: "13%" }} />
+                              <col style={{ width: "16%" }} />
+                            </colgroup>
+                            <thead>
+                              <tr>
+                                <th className={headerCell}>
+                                  <b>Emisión</b>
+                                  <span className={headerSub}>issue_date</span>
+                                </th>
+                                <th className={headerCell}>
+                                  <b>Cód</b>
+                                  <span className={headerSub}>fiscal</span>
+                                </th>
+                                <th className={headerCell}>
+                                  <b>Folio</b>
+                                  <span className={headerSub}>serie / número</span>
+                                </th>
+                                <th className={cls(headerCell, "text-right")}>
+                                  <b>Afecto</b>
+                                  <span className={headerSub}>net</span>
+                                </th>
+                                <th className={cls(headerCell, "text-right")}>
+                                  <b>Exento</b>
+                                  <span className={headerSub}>ex</span>
+                                </th>
+                                <th className={cls(headerCell, "text-right")}>
+                                  <b>IVA</b>
+                                  <span className={headerSub}>iva</span>
+                                </th>
+                                <th className={cls(headerCell, "text-right")}>
+                                  <b>Total</b>
+                                  <span className={headerSub}>grand_total</span>
+                                </th>
+                              </tr>
+                            </thead>
+                          </table>
+                        </div>
+
+                        <div className="overflow-x-hidden">
+                          <table className="w-full table-fixed border-collapse text-sm">
+                            <colgroup>
+                              <col style={{ width: "13%" }} />
+                              <col style={{ width: "10%" }} />
+                              <col style={{ width: "22%" }} />
+                              <col style={{ width: "13%" }} />
+                              <col style={{ width: "13%" }} />
+                              <col style={{ width: "13%" }} />
+                              <col style={{ width: "16%" }} />
+                            </colgroup>
+
+                            <tbody>
+                              <tr className="bg-slate-50/80 hover:bg-sky-50/30">
+                                <td className={cls(bodyCell, "text-xs")}>
+                                  {header.origin_issue_date || "—"}
+                                </td>
+
+                                <td className={cls(bodyCell, "font-semibold")}>
+                                  {header.origin_fiscal_doc_code || "—"}
+                                </td>
+
+                                <td className={bodyCell}>
+                                  <div
+                                    className="truncate font-medium"
+                                    title={header.origin_label || "Sin folio"}
+                                  >
+                                    {header.origin_label || "Sin folio"}
+                                  </div>
+                                </td>
+
+                                <td className={cls(bodyCell, "text-right")}>
+                                  {header.origin_net_taxable != null
+                                    ? formatNumber(Number(header.origin_net_taxable || 0), moneyDecimals)
+                                    : "—"}
+                                </td>
+
+                                <td className={cls(bodyCell, "text-right")}>
+                                  {header.origin_net_exempt != null
+                                    ? formatNumber(Number(header.origin_net_exempt || 0), moneyDecimals)
+                                    : "—"}
+                                </td>
+
+                                <td className={cls(bodyCell, "text-right")}>
+                                  {header.origin_tax_total != null
+                                    ? formatNumber(Number(header.origin_tax_total || 0), moneyDecimals)
+                                    : "—"}
+                                </td>
+
+                                <td className={cls(bodyCell, "text-right font-semibold")}>
+                                  {header.origin_grand_total != null
+                                    ? formatNumber(Number(header.origin_grand_total || 0), moneyDecimals)
+                                    : "—"}
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      <div className="border-t bg-slate-50 px-4 py-3">
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
+                          <div>
+                            <div className="text-[11px] text-slate-500">Tipo documento</div>
+                            <div className="font-medium text-slate-900">
+                              {header.origin_doc_type || "—"}
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="text-[11px] text-slate-500">Estado documento</div>
+                            <div className="font-medium text-slate-900">
+                              {header.origin_status || "—"}
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="text-[11px] text-slate-500">Condición pago</div>
+                            <div className="font-medium text-slate-900">
+                              {header.origin_payment_status || "—"}
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="text-[11px] text-slate-500">Moneda</div>
+                            <div className="font-medium text-slate-900">
+                              {header.origin_currency_code || "—"}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="border-t bg-amber-50 px-4 py-2 text-[11px] text-amber-900">
+                        Luego validaremos monto de la NC/ND contra el saldo disponible del documento origen.
                       </div>
                     </div>
-                    <div className="text-sm text-slate-700">
-                      <div className="text-[11px] text-slate-600">Nota</div>
-                      Luego validamos monto vs origen.
-                    </div>
-                  </div>
-
-                  {originPanelOpen ? (
-                    <div className="mt-3 rounded-2xl border bg-white p-3">
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                        <div className="md:col-span-2">
-                          <label className="text-xs text-slate-600 font-medium">Buscar por serie/folio/número</label>
-                          <input
-                            className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
-                            value={originQuery}
-                            onChange={(e) => setOriginQuery(e.target.value)}
-                            placeholder="Ej: F001 o 000123"
-                          />
-                        </div>
-                        <div className="flex items-end gap-2">
-                          <button
-                            className={cls(
-                              "w-full rounded-lg px-3 py-2 text-sm text-white",
-                              originLoading ? "bg-slate-400" : "bg-slate-900 hover:bg-slate-800"
-                            )}
-                            onClick={searchOriginDocs}
-                            disabled={originLoading}
-                            type="button"
-                          >
-                            {originLoading ? "Buscando..." : "Buscar"}
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="mt-3 rounded-xl border overflow-hidden">
-                        <div className="bg-slate-50 px-3 py-2 text-xs text-slate-600">Resultados</div>
-                        <div className="max-h-[260px] overflow-y-auto overflow-x-hidden">
-                          {originResults.length === 0 ? (
-                            <div className="p-3 text-sm text-slate-600">Sin resultados.</div>
-                          ) : (
-                            <table className="w-full text-sm border-collapse table-fixed">
-                              <colgroup>
-                                <col style={{ width: "34%" }} />
-                                <col style={{ width: "18%" }} />
-                                <col style={{ width: "18%" }} />
-                                <col style={{ width: "15%" }} />
-                                <col style={{ width: "15%" }} />
-                              </colgroup>
-                              <thead>
-                                <tr className="bg-white">
-                                  <th className="border px-2 py-2 text-left">Folio</th>
-                                  <th className="border px-2 py-2 text-left">Fecha</th>
-                                  <th className="border px-2 py-2 text-right">Total</th>
-                                  <th className="border px-2 py-2 text-left">Moneda</th>
-                                  <th className="border px-2 py-2 text-right"> </th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {originResults.map((r) => {
-                                  const folio = folioLabel(r.series, r.number);
-                                  return (
-                                    <tr key={r.id} className="hover:bg-sky-50/30">
-                                      <td className="border px-2 py-2">
-                                        <b>{folio}</b>{" "}
-                                        <span className="text-xs text-slate-500">({r.id.slice(0, 8)}…)</span>
-                                      </td>
-                                      <td className="border px-2 py-2">{r.issue_date || "—"}</td>
-                                      <td className="border px-2 py-2 text-right">
-                                        {formatNumber(Number(r.grand_total || 0), moneyDecimals)}
-                                      </td>
-                                      <td className="border px-2 py-2">{r.currency_code || "—"}</td>
-                                      <td className="border px-2 py-2 text-right">
-                                        <button
-                                          className="rounded-lg bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-800"
-                                          onClick={() => pickOrigin(r)}
-                                          type="button"
-                                        >
-                                          Asignar
-                                        </button>
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="mt-2 flex justify-end">
-                        <button className={theme.btnSoft} onClick={() => setOriginPanelOpen(false)} type="button">
-                          Cerrar búsqueda
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
+                  )}
                 </div>
               </div>
             ) : null}

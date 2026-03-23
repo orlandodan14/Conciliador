@@ -122,8 +122,15 @@ type FiscalDocSettingsDB = {
   enabled: boolean;
   require_sales: boolean;
   require_purchases: boolean;
+
+  // Legacy: se mantiene para no romper páginas viejas
   default_sales_doc_type_id: string | null;
   default_purchase_doc_type_id: string | null;
+
+  // Nuevos defaults por tipo de documento de ventas
+  default_sales_invoice_doc_type_id: string | null;
+  default_sales_debit_note_doc_type_id: string | null;
+  default_sales_credit_note_doc_type_id: string | null;
 
   // ✅ NUEVO: controla si se puede cancelar desde módulos
   allow_sales_cancellation: boolean;
@@ -150,6 +157,21 @@ type FiscalDocTypeRow = {
 
 function scopeLabel(s: DocScope) {
   return s === "AMBOS" ? "Ventas y Compras" : s === "VENTA" ? "Ventas" : "Compras";
+}
+
+function hydrateSettingsRow(row: any): FiscalDocSettingsDB {
+  const invoiceDefault = row?.default_sales_invoice_doc_type_id ?? row?.default_sales_doc_type_id ?? null;
+
+  return {
+    ...(row as any),
+    default_sales_doc_type_id: row?.default_sales_doc_type_id ?? invoiceDefault,
+    default_purchase_doc_type_id: row?.default_purchase_doc_type_id ?? null,
+    default_sales_invoice_doc_type_id: invoiceDefault,
+    default_sales_debit_note_doc_type_id: row?.default_sales_debit_note_doc_type_id ?? null,
+    default_sales_credit_note_doc_type_id: row?.default_sales_credit_note_doc_type_id ?? null,
+    allow_sales_cancellation: Boolean(row?.allow_sales_cancellation ?? true),
+    allow_purchase_cancellation: Boolean(row?.allow_purchase_cancellation ?? true),
+  } as FiscalDocSettingsDB;
 }
 
 /**
@@ -208,6 +230,9 @@ export default function DocumentosFiscalesPage() {
           "require_purchases",
           "default_sales_doc_type_id",
           "default_purchase_doc_type_id",
+          "default_sales_invoice_doc_type_id",
+          "default_sales_debit_note_doc_type_id",
+          "default_sales_credit_note_doc_type_id",
           "allow_sales_cancellation",
           "allow_purchase_cancellation",
           "created_at",
@@ -221,14 +246,7 @@ export default function DocumentosFiscalesPage() {
       return;
     }
 
-    // Defaults seguros por si el campo aún no existe en alguna env
-    const s: FiscalDocSettingsDB | null = data
-      ? ({
-          ...(data as any),
-          allow_sales_cancellation: Boolean((data as any).allow_sales_cancellation ?? true),
-          allow_purchase_cancellation: Boolean((data as any).allow_purchase_cancellation ?? true),
-        } as any)
-      : null;
+    const s: FiscalDocSettingsDB | null = data ? hydrateSettingsRow(data) : null;
 
     setSettings(s);
   }
@@ -250,6 +268,9 @@ export default function DocumentosFiscalesPage() {
       require_purchases: false,
       default_sales_doc_type_id: null,
       default_purchase_doc_type_id: null,
+      default_sales_invoice_doc_type_id: null,
+      default_sales_debit_note_doc_type_id: null,
+      default_sales_credit_note_doc_type_id: null,
 
       // ✅ NUEVO: valores por defecto
       allow_sales_cancellation: true,
@@ -272,9 +293,17 @@ export default function DocumentosFiscalesPage() {
       await ensureSettings(companyId);
       const uid = await getAuthUserId();
 
+      const patch: Partial<FiscalDocSettingsDB> = { ...next };
+
+      // Compatibilidad hacia atrás:
+      // el default legacy de ventas seguirá reflejando el default de Documento de ingreso.
+      if (Object.prototype.hasOwnProperty.call(patch, "default_sales_invoice_doc_type_id")) {
+        patch.default_sales_doc_type_id = patch.default_sales_invoice_doc_type_id ?? null;
+      }
+
       const { data, error } = await supabase
         .from("fiscal_doc_settings")
-        .update({ ...next, updated_by: uid })
+        .update({ ...patch, updated_by: uid })
         .eq("company_id", companyId)
         .select(
           [
@@ -285,6 +314,9 @@ export default function DocumentosFiscalesPage() {
             "require_purchases",
             "default_sales_doc_type_id",
             "default_purchase_doc_type_id",
+            "default_sales_invoice_doc_type_id",
+            "default_sales_debit_note_doc_type_id",
+            "default_sales_credit_note_doc_type_id",
             "allow_sales_cancellation",
             "allow_purchase_cancellation",
             "created_at",
@@ -294,11 +326,7 @@ export default function DocumentosFiscalesPage() {
 
       if (error) throw error;
 
-      setSettings({
-        ...(data as any),
-        allow_sales_cancellation: Boolean((data as any).allow_sales_cancellation ?? true),
-        allow_purchase_cancellation: Boolean((data as any).allow_purchase_cancellation ?? true),
-      } as any);
+      setSettings(hydrateSettingsRow(data));
     } catch (e: any) {
       alert(`Error guardando configuración: ${e?.message ?? "Error"}`);
     } finally {
@@ -593,6 +621,9 @@ export default function DocumentosFiscalesPage() {
         const cleared: Partial<FiscalDocSettingsDB> = {};
         if (settings.default_sales_doc_type_id === r.id) cleared.default_sales_doc_type_id = null;
         if (settings.default_purchase_doc_type_id === r.id) cleared.default_purchase_doc_type_id = null;
+        if (settings.default_sales_invoice_doc_type_id === r.id) cleared.default_sales_invoice_doc_type_id = null;
+        if (settings.default_sales_debit_note_doc_type_id === r.id) cleared.default_sales_debit_note_doc_type_id = null;
+        if (settings.default_sales_credit_note_doc_type_id === r.id) cleared.default_sales_credit_note_doc_type_id = null;
         if (Object.keys(cleared).length) setSettings({ ...settings, ...cleared } as any);
       }
     } catch (e: any) {
@@ -665,7 +696,7 @@ export default function DocumentosFiscalesPage() {
               <div className="min-w-0">
                 <div className="text-[12px] font-extrabold uppercase text-slate-600">Parámetros</div>
                 <div className="mt-1 text-[13px] text-slate-600">
-                  País empresa: <b>{countryCode ?? "—"}</b> • Aquí defines si se exige y si se permite cancelar.
+                  País empresa: <b>{countryCode ?? "—"}</b> • Aquí defines exigencia, defaults y cancelación.
                 </div>
               </div>
 
@@ -733,10 +764,10 @@ export default function DocumentosFiscalesPage() {
               </div>
 
               <div className="lg:col-span-3">
-                <div className="text-[11px] font-extrabold uppercase text-slate-600">Default ventas</div>
+                <div className="text-[11px] font-extrabold uppercase text-slate-600">Default ventas · Documento ingreso</div>
                 <select
-                  value={settings?.default_sales_doc_type_id ?? ""}
-                  onChange={(e) => saveSettings({ default_sales_doc_type_id: e.target.value || null })}
+                  value={settings?.default_sales_invoice_doc_type_id ?? settings?.default_sales_doc_type_id ?? ""}
+                  onChange={(e) => saveSettings({ default_sales_invoice_doc_type_id: e.target.value || null })}
                   disabled={!canEdit || savingSettings || !(settings?.enabled ?? false)}
                   className={cls(
                     "mt-1 w-full rounded-2xl border bg-white px-4 py-2 text-[12px] font-extrabold text-slate-900 outline-none focus:ring-2 focus:ring-slate-200",
@@ -750,6 +781,49 @@ export default function DocumentosFiscalesPage() {
                     </option>
                   ))}
                 </select>
+                <div className="mt-1 text-[12px] text-slate-500">Se usa para doc_type = INVOICE.</div>
+              </div>
+
+              <div className="lg:col-span-3">
+                <div className="text-[11px] font-extrabold uppercase text-slate-600">Default ventas · Nota débito</div>
+                <select
+                  value={settings?.default_sales_debit_note_doc_type_id ?? ""}
+                  onChange={(e) => saveSettings({ default_sales_debit_note_doc_type_id: e.target.value || null })}
+                  disabled={!canEdit || savingSettings || !(settings?.enabled ?? false)}
+                  className={cls(
+                    "mt-1 w-full rounded-2xl border bg-white px-4 py-2 text-[12px] font-extrabold text-slate-900 outline-none focus:ring-2 focus:ring-slate-200",
+                    !canEdit || !(settings?.enabled ?? false) ? "border-slate-200 opacity-60 cursor-not-allowed" : "border-slate-200"
+                  )}
+                >
+                  <option value="">— (sin default)</option>
+                  {salesOptions.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.code} • {o.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="mt-1 text-[12px] text-slate-500">Se usa para doc_type = DEBIT_NOTE.</div>
+              </div>
+
+              <div className="lg:col-span-3">
+                <div className="text-[11px] font-extrabold uppercase text-slate-600">Default ventas · Nota crédito</div>
+                <select
+                  value={settings?.default_sales_credit_note_doc_type_id ?? ""}
+                  onChange={(e) => saveSettings({ default_sales_credit_note_doc_type_id: e.target.value || null })}
+                  disabled={!canEdit || savingSettings || !(settings?.enabled ?? false)}
+                  className={cls(
+                    "mt-1 w-full rounded-2xl border bg-white px-4 py-2 text-[12px] font-extrabold text-slate-900 outline-none focus:ring-2 focus:ring-slate-200",
+                    !canEdit || !(settings?.enabled ?? false) ? "border-slate-200 opacity-60 cursor-not-allowed" : "border-slate-200"
+                  )}
+                >
+                  <option value="">— (sin default)</option>
+                  {salesOptions.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.code} • {o.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="mt-1 text-[12px] text-slate-500">Se usa para doc_type = CREDIT_NOTE.</div>
               </div>
 
               <div className="lg:col-span-3">
@@ -770,6 +844,7 @@ export default function DocumentosFiscalesPage() {
                     </option>
                   ))}
                 </select>
+                <div className="mt-1 text-[12px] text-slate-500">Se mantiene como configuración general de compras.</div>
               </div>
 
               {/* ✅ NUEVO: Cancelación */}

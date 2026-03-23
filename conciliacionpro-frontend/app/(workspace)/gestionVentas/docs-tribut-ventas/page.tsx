@@ -6,6 +6,11 @@ import * as XLSX from "xlsx";
 import { CounterpartyCreateModal, Counterparty as CPCounterparty } from "@/app/(workspace)/components/counterparties/CounterpartyCreateModal";
 import { Pencil, CheckCircle2, Trash2 } from "lucide-react";
 import { TradeDocEditorModal } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocEditorModal";
+import {
+  OriginDocSearchModal,
+  type OriginSearchFilters,
+  type OriginDocLite,
+} from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/OriginDocSearchModal";
 
 /**
  * =========================
@@ -538,13 +543,24 @@ type DocHeader = {
   counterparty_name: string;
 
   reference: string;
-  notes: string;
 
   cancelled_at: string;
   cancel_reason: string;
 
   origin_doc_id: string | null;
   origin_label: string;
+
+  origin_doc_type?: DocType | null;
+  origin_fiscal_doc_code?: string | null;
+  origin_issue_date?: string | null;
+  origin_currency_code?: string | null;
+  origin_net_taxable?: number | null;
+  origin_net_exempt?: number | null;
+  origin_tax_total?: number | null;
+  origin_grand_total?: number | null;
+  origin_balance?: number | null;
+  origin_payment_status?: "PAGADO" | "PARCIAL" | "PENDIENTE" | null;
+  origin_status?: DocStatus | "PAGADO" | "PARCIAL" | "PENDIENTE" | null;
 };
 
 type FiscalDocTypeLite = {
@@ -558,7 +574,10 @@ type FiscalDocTypeLite = {
 type FiscalDocSettingsLite = {
   enabled: boolean;
   require_sales: boolean;
-  default_sales_doc_type_id: string | null; // ✅ nombre real
+  default_sales_doc_type_id: string | null;
+  default_sales_invoice_doc_type_id: string | null;
+  default_sales_debit_note_doc_type_id: string | null;
+  default_sales_credit_note_doc_type_id: string | null;
 };
 
 type BranchLite = {
@@ -626,14 +645,6 @@ type JournalLine = {
   branch_code: string;
 };
 
-type OriginDocLite = {
-  id: string;
-  series?: string | null;
-  number?: string | null;
-  issue_date?: string | null;
-  grand_total?: number | null;
-  currency_code?: string | null;
-};
 
 type DraftRow = {
   id: string;
@@ -771,12 +782,14 @@ export default function Page() {
 
   // ✅ Documentos fiscales (config)
   const [fiscalCfg, setFiscalCfg] = useState<FiscalDocSettingsLite>({
-  enabled: false,
-  require_sales: false,
-  default_sales_doc_type_id: null,
+    enabled: false,
+    require_sales: false,
+    default_sales_doc_type_id: null,
+    default_sales_invoice_doc_type_id: null,
+    default_sales_debit_note_doc_type_id: null,
+    default_sales_credit_note_doc_type_id: null,
   });
   const [fiscalDocTypes, setFiscalDocTypes] = useState<FiscalDocTypeLite[]>([]);
-  const [defaultFiscalCodeSales, setDefaultFiscalCodeSales] = useState<string>("");
 
   // ✅ NUEVO: permiso de cancelación (fallback true si columna no existe)
   const [allowCancelSales, setAllowCancelSales] = useState<boolean>(true);
@@ -800,11 +813,21 @@ export default function Page() {
     counterparty_identifier: "",
     counterparty_name: "",
     reference: "",
-    notes: "",
     cancelled_at: "",
     cancel_reason: "",
     origin_doc_id: null,
     origin_label: "",
+    origin_doc_type: null,
+    origin_fiscal_doc_code: null,
+    origin_issue_date: null,
+    origin_currency_code: null,
+    origin_net_taxable: null,
+    origin_net_exempt: null,
+    origin_tax_total: null,
+    origin_grand_total: null,
+    origin_balance: null,
+    origin_payment_status: null,
+    origin_status: null,
   });
 
   const [lines, setLines] = useState<DocLine[]>(Array.from({ length: 4 }, (_, i) => makeDocLine(i + 1)));
@@ -845,12 +868,26 @@ export default function Page() {
     identifier: "",
   });
 
-  // Origin PANEL
+  // Origin SEARCH MODAL
   const needsOrigin = header.doc_type === "CREDIT_NOTE" || header.doc_type === "DEBIT_NOTE";
-  const [originPanelOpen, setOriginPanelOpen] = useState(false);
-  const [originQuery, setOriginQuery] = useState("");
+
+  const [originSearchOpen, setOriginSearchOpen] = useState(false);
   const [originLoading, setOriginLoading] = useState(false);
   const [originResults, setOriginResults] = useState<OriginDocLite[]>([]);
+  const ORIGIN_PAGE_SIZE = 30;
+
+  const [originHasMore, setOriginHasMore] = useState(false);
+  const [originLoadingMore, setOriginLoadingMore] = useState(false);
+  const [originOffset, setOriginOffset] = useState(0);
+
+  const [originFilters, setOriginFilters] = useState<OriginSearchFilters>({
+    fiscal_doc_code: "",
+    folio: "",
+    issue_date_from: "",
+    issue_date_to: "",
+    only_open_balance: true,
+    only_vigente: true,
+  });
 
   // Drafts list
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
@@ -967,7 +1004,15 @@ export default function Page() {
         try {
           const r1 = await supabase
             .from("fiscal_doc_settings")
-            .select("enabled,require_sales,default_sales_doc_type_id,allow_sales_cancellation")
+            .select(`
+              enabled,
+              require_sales,
+              default_sales_doc_type_id,
+              default_sales_invoice_doc_type_id,
+              default_sales_debit_note_doc_type_id,
+              default_sales_credit_note_doc_type_id,
+              allow_sales_cancellation
+            `)
             .eq("company_id", companyId)
             .maybeSingle();
           if (r1.error) throw r1.error;
@@ -978,7 +1023,14 @@ export default function Page() {
           if (isUnknownColumnError(e)) {
             const r2 = await supabase
               .from("fiscal_doc_settings")
-              .select("enabled,require_sales,default_sales_doc_type_id")
+              .select(`
+                enabled,
+                require_sales,
+                default_sales_doc_type_id,
+                default_sales_invoice_doc_type_id,
+                default_sales_debit_note_doc_type_id,
+                default_sales_credit_note_doc_type_id
+              `)
               .eq("company_id", companyId)
               .maybeSingle();
             if (r2.error) throw r2.error;
@@ -993,6 +1045,12 @@ export default function Page() {
           enabled: Boolean((cfg as any)?.enabled),
           require_sales: Boolean((cfg as any)?.require_sales),
           default_sales_doc_type_id: (cfg as any)?.default_sales_doc_type_id ?? null,
+          default_sales_invoice_doc_type_id:
+            (cfg as any)?.default_sales_invoice_doc_type_id ?? null,
+          default_sales_debit_note_doc_type_id:
+            (cfg as any)?.default_sales_debit_note_doc_type_id ?? null,
+          default_sales_credit_note_doc_type_id:
+            (cfg as any)?.default_sales_credit_note_doc_type_id ?? null,
         };
         setFiscalCfg(nextCfg);
 
@@ -1013,14 +1071,16 @@ export default function Page() {
           is_active: Boolean(x.is_active),
         }));
         setFiscalDocTypes(list);
-
-        const defId = nextCfg.default_sales_doc_type_id;
-        const defCode = defId ? (list.find((t) => t.id === defId)?.code ?? "") : "";
-        setDefaultFiscalCodeSales(defCode);
       } catch {
-        setFiscalCfg({ enabled: false, require_sales: false, default_sales_doc_type_id: null });
+        setFiscalCfg({
+          enabled: false,
+          require_sales: false,
+          default_sales_doc_type_id: null,
+          default_sales_invoice_doc_type_id: null,
+          default_sales_debit_note_doc_type_id: null,
+          default_sales_credit_note_doc_type_id: null,
+        });
         setFiscalDocTypes([]);
-        setDefaultFiscalCodeSales("");
         setAllowCancelSales(true); // fallback seguro
       }
 
@@ -1392,6 +1452,36 @@ export default function Page() {
    */
   function setHeaderPatch(patch: Partial<DocHeader>) {
     setHeader((h) => ({ ...h, ...patch }));
+  }
+  function getDefaultFiscalDocTypeIdByDocType(
+    docType: DocType,
+    cfg: FiscalDocSettingsLite
+  ): string | null {
+    if (docType === "INVOICE") {
+      return cfg.default_sales_invoice_doc_type_id || cfg.default_sales_doc_type_id || null;
+    }
+
+    if (docType === "DEBIT_NOTE") {
+      return cfg.default_sales_debit_note_doc_type_id || null;
+    }
+
+    if (docType === "CREDIT_NOTE") {
+      return cfg.default_sales_credit_note_doc_type_id || null;
+    }
+
+    return null;
+  }
+
+  function getDefaultFiscalDocCodeByDocType(
+    docType: DocType,
+    cfg: FiscalDocSettingsLite,
+    types: FiscalDocTypeLite[]
+  ): string {
+    const id = getDefaultFiscalDocTypeIdByDocType(docType, cfg);
+    if (!id) return "";
+
+    const found = types.find((t) => t.id === id && t.is_active);
+    return found?.code || "";
   }
   function setHeaderBranchCode(rawCode: string) {
     const typedCode = String(rawCode || "").trim();
@@ -2168,7 +2258,9 @@ export default function Page() {
 
     setHeader({
       doc_type: "INVOICE",
-      fiscal_doc_code: fiscalCfg.enabled ? (defaultFiscalCodeSales || "") : "",
+      fiscal_doc_code: fiscalCfg.enabled
+        ? getDefaultFiscalDocCodeByDocType("INVOICE", fiscalCfg, fiscalDocTypes)
+        : "",
       status: "BORRADOR",
       issue_date: todayISO(),
       due_date: todayISO(),
@@ -2179,11 +2271,21 @@ export default function Page() {
       counterparty_identifier: "",
       counterparty_name: "",
       reference: "",
-      notes: "",
       cancelled_at: "",
       cancel_reason: "",
       origin_doc_id: null,
       origin_label: "",
+      origin_doc_type: null,
+      origin_fiscal_doc_code: null,
+      origin_issue_date: null,
+      origin_currency_code: null,
+      origin_net_taxable: null,
+      origin_net_exempt: null,
+      origin_tax_total: null,
+      origin_grand_total: null,
+      origin_balance: null,
+      origin_payment_status: null,
+      origin_status: null,
     });
 
     setLines(
@@ -2196,10 +2298,20 @@ export default function Page() {
     setJournalLines(Array.from({ length: 4 }, (_, i) => makeJournalLine(i + 1)));
 
     setMessages([]);
-    setOriginPanelOpen(false);
-    setOriginQuery("");
+    setOriginSearchOpen(false);
     setOriginResults([]);
     setOriginLoading(false);
+    setOriginFilters({
+      fiscal_doc_code: "",
+      folio: "",
+      issue_date_from: "",
+      issue_date_to: "",
+      only_open_balance: true,
+      only_vigente: true,
+    });
+    setOriginHasMore(false);
+    setOriginLoadingMore(false);
+    setOriginOffset(0);
   }
 
   function openNewDoc() {
@@ -2210,47 +2322,176 @@ export default function Page() {
 
   function closeEditor() {
     setEditorOpen(false);
-    setOriginPanelOpen(false);
+    setOriginSearchOpen(false);
   }
 
   /**
    * Origin search
    */
-  async function searchOriginDocs() {
+  async function searchOriginDocs(reset = true) {
     if (!companyId) return;
-    setOriginLoading(true);
+
+    const counterpartyIdentifierRaw = String(header.counterparty_identifier || "").trim();
+    if (!counterpartyIdentifierRaw) return;
+
+    const resolvedCounterpartyId = await resolveCounterpartyIdByIdentifier(counterpartyIdentifierRaw);
+    if (!resolvedCounterpartyId) {
+      if (reset) {
+        setOriginResults([]);
+        setOriginHasMore(false);
+        setOriginOffset(0);
+      }
+      return;
+    }
+
+    if (reset) {
+      setOriginLoading(true);
+      setOriginOffset(0);
+    } else {
+      if (originLoadingMore || !originHasMore) return;
+      setOriginLoadingMore(true);
+    }
+
     try {
-      const q = originQuery.trim();
+      const from = reset ? 0 : originOffset;
+      const to = from + ORIGIN_PAGE_SIZE - 1;
 
       let query = supabase
         .from("trade_docs")
-        .select("id,series,number,issue_date,grand_total,currency_code,status,doc_type")
+        .select(`
+          id,
+          doc_type,
+          fiscal_doc_code,
+          series,
+          number,
+          issue_date,
+          net_taxable,
+          net_exempt,
+          tax_total,
+          grand_total,
+          currency_code,
+          status
+        `)
         .eq("company_id", companyId)
-        .in("doc_type", ["INVOICE"])
-        .neq("status", "CANCELADO")
+        .eq("counterparty_id", resolvedCounterpartyId)
+        .eq("doc_type", "INVOICE")
         .order("issue_date", { ascending: false })
-        .limit(30);
+        .order("created_at", { ascending: false })
+        .range(from, to);
 
-      if (q) query = query.or(`number.ilike.%${q}%,series.ilike.%${q}%`) as any;
+      if (originFilters.only_vigente) {
+        query = query.eq("status", "VIGENTE");
+      } else {
+        query = query.neq("status", "BORRADOR").neq("status", "CANCELADO");
+      }
+
+      if (originFilters.fiscal_doc_code.trim()) {
+        query = query.ilike("fiscal_doc_code", `%${originFilters.fiscal_doc_code.trim()}%`);
+      }
+
+      if (originFilters.folio.trim()) {
+        const q = originFilters.folio.trim();
+        query = query.or(`number.ilike.%${q}%,series.ilike.%${q}%`) as any;
+      }
+
+      if (originFilters.issue_date_from) {
+        query = query.gte("issue_date", originFilters.issue_date_from);
+      }
+
+      if (originFilters.issue_date_to) {
+        query = query.lte("issue_date", originFilters.issue_date_to);
+      }
 
       const { data, error } = await query;
       if (error) throw error;
 
-      setOriginResults(((data as any) || []) as OriginDocLite[]);
+      const mapped: OriginDocLite[] = ((data as any[]) || []).map((r) => {
+        const total = Number(r.grand_total || 0);
+
+        return {
+          id: r.id,
+          doc_type: r.doc_type,
+          fiscal_doc_code: r.fiscal_doc_code,
+          series: r.series,
+          number: r.number,
+          issue_date: r.issue_date,
+          net_taxable: Number(r.net_taxable || 0),
+          net_exempt: Number(r.net_exempt || 0),
+          tax_total: Number(r.tax_total || 0),
+          grand_total: total,
+          balance: total, // luego conectamos saldo real si lo guardas aparte
+          currency_code: r.currency_code,
+          status: r.status,
+        };
+      });
+
+      const filtered = originFilters.only_open_balance
+        ? mapped.filter((x) => Number(x.balance || 0) > 0)
+        : mapped;
+
+      if (reset) {
+        setOriginResults(filtered);
+      } else {
+        setOriginResults((prev) => [...prev, ...filtered]);
+      }
+
+      const fetchedCount = ((data as any[]) || []).length;
+      setOriginHasMore(fetchedCount === ORIGIN_PAGE_SIZE);
+      setOriginOffset(from + fetchedCount);
     } catch (e: any) {
-      setOriginResults([]);
-      setMessages([{ level: "error", text: e?.message || "No se pudo buscar documentos." }]);
+      alert(`Error buscando documentos origen: ${e?.message ?? "Error"}`);
+      if (reset) {
+        setOriginResults([]);
+        setOriginHasMore(false);
+        setOriginOffset(0);
+      }
     } finally {
       setOriginLoading(false);
+      setOriginLoadingMore(false);
     }
+  }
+
+  async function loadMoreOriginDocs() {
+    await searchOriginDocs(false);
+  }
+
+  function clearOrigin() {
+    setHeader((h) => ({
+      ...h,
+      origin_doc_id: null,
+      origin_label: "",
+      origin_doc_type: null,
+      origin_fiscal_doc_code: null,
+      origin_issue_date: null,
+      origin_currency_code: null,
+      origin_net_taxable: null,
+      origin_net_exempt: null,
+      origin_tax_total: null,
+      origin_grand_total: null,
+      origin_balance: null,
+      origin_payment_status: null,
+      origin_status: null,
+    }));
   }
 
   function pickOrigin(d: OriginDocLite) {
     setHeaderPatch({
       origin_doc_id: d.id,
       origin_label: folioLabel(d.series, d.number),
+      origin_doc_type: d.doc_type ?? null,
+      origin_fiscal_doc_code: d.fiscal_doc_code ?? null,
+      origin_issue_date: d.issue_date ?? null,
+      origin_currency_code: d.currency_code ?? null,
+      origin_net_taxable: d.net_taxable ?? null,
+      origin_net_exempt: d.net_exempt ?? null,
+      origin_tax_total: d.tax_total ?? null,
+      origin_grand_total: d.grand_total ?? null,
+      origin_balance: d.balance ?? null,
+      origin_payment_status: null,
+      origin_status: d.status ?? null,
     });
-    setOriginPanelOpen(false);
+
+    setOriginSearchOpen(false);
   }
 
   /**
@@ -2305,8 +2546,8 @@ export default function Page() {
   /**
    * Save / status
    */
-  async function saveDraftMVP() {
-    if (!companyId || !canEdit) return;
+  async function saveDraftInternal(closeAfterSave = true): Promise<string | null> {
+    if (!companyId || !canEdit) return null;
 
     let savedIdForRollback: string | null = null;
     let journalEntryIdForRollback: string | null = null;
@@ -2333,7 +2574,7 @@ export default function Page() {
 
           return {
             company_id: companyId,
-            trade_doc_id: "", // se completa después
+            trade_doc_id: "",
             line_no: i + 1,
             item_id: l.item_id || null,
             sku: l.sku || null,
@@ -2372,7 +2613,6 @@ export default function Page() {
         counterparty_identifier_snapshot: header.counterparty_identifier || null,
         counterparty_name_snapshot: header.counterparty_name || null,
         reference: header.reference || null,
-        notes: header.notes || null,
         origin_doc_id: header.origin_doc_id,
         net_taxable: totals.net_taxable,
         net_exempt: totals.net_exempt,
@@ -2393,14 +2633,11 @@ export default function Page() {
         counterparty_identifier_snapshot: header.counterparty_identifier || null,
         counterparty_name_snapshot: header.counterparty_name || null,
         reference: header.reference || null,
-        notes: header.notes || null,
         origin_doc_id: header.origin_doc_id,
         grand_total: totals.grand_total,
       };
 
-      const result = journalAutoMode
-        ? buildJournalFromDoc()
-        : buildJournalFromManual();
+      const result = journalAutoMode ? buildJournalFromDoc() : buildJournalFromManual();
 
       if (result.error) throw new Error(result.error);
 
@@ -2491,9 +2728,6 @@ export default function Page() {
         if (deleteExtrasError) throw deleteExtrasError;
       }
 
-      // =========================
-      // Asiento borrador
-      // =========================
       const { data: currentDoc, error: currentDocError } = await supabase
         .from("trade_docs")
         .select("journal_entry_id")
@@ -2503,7 +2737,6 @@ export default function Page() {
 
       if (currentDocError) throw currentDocError;
 
-      
       const draftJournalEntryId = await upsertDraftJournalEntry({
         companyId,
         docId: savedId,
@@ -2542,52 +2775,47 @@ export default function Page() {
         counterpartyId = await resolveCounterpartyIdByIdentifier(header.counterparty_identifier);
       }
 
-        const journalLineRows = result.lines.map((rawLine, idx) => {
-          const l = normalizeLineDimensionsByPolicy(rawLine);
+      const journalLineRows = result.lines.map((rawLine, idx) => {
+        const l = normalizeLineDimensionsByPolicy(rawLine);
 
-          const acc = accByCode[String(l.account_code).trim()];
-          if (!acc?.id) {
-            throw new Error(`La cuenta contable ${l.account_code} no existe.`);
-          }
+        const acc = accByCode[String(l.account_code).trim()];
+        if (!acc?.id) {
+          throw new Error(`La cuenta contable ${l.account_code} no existe.`);
+        }
 
-          const policy = getPostingPolicyByAccountCode(l.account_code);
+        const policy = getPostingPolicyByAccountCode(l.account_code);
 
-          if (policy?.require_suc && !l.branch_id) {
-            throw new Error(`La cuenta ${acc.code} exige sucursal (SUC).`);
-          }
+        if (policy?.require_suc && !l.branch_id) {
+          throw new Error(`La cuenta ${acc.code} exige sucursal (SUC).`);
+        }
 
-          if (policy?.require_cu && !l.business_line_id) {
-            throw new Error(`La cuenta ${acc.code} exige línea de negocio (CU).`);
-          }
+        if (policy?.require_cu && !l.business_line_id) {
+          throw new Error(`La cuenta ${acc.code} exige línea de negocio (CU).`);
+        }
 
-          return {
-            company_id: companyId,
-            journal_entry_id: draftJournalEntryId,
-            line_no: idx + 1,
-            account_node_id: acc.id,
-            line_description: l.description || null,
-            line_reference: header.reference || null,
-            debit: toNum(l.debit),
-            credit: toNum(l.credit),
-            counterparty_id: counterpartyId,
-
-            cost_center_id: null,
-            business_line_id: l.business_line_id || null,
-            branch_id: l.branch_id || null,
-
-            item_id: null,
-            tax_id: null,
-            tax_rate_id: null,
-
-            account_code_snapshot: acc.code,
-            account_name_snapshot: acc.name,
-
-            counterparty_identifier_snapshot: header.counterparty_identifier || null,
-            counterparty_name_snapshot: header.counterparty_name || null,
-
-            created_by: userId,
-          };
-        });
+        return {
+          company_id: companyId,
+          journal_entry_id: draftJournalEntryId,
+          line_no: idx + 1,
+          account_node_id: acc.id,
+          line_description: l.description || null,
+          line_reference: header.reference || null,
+          debit: toNum(l.debit),
+          credit: toNum(l.credit),
+          counterparty_id: counterpartyId,
+          cost_center_id: null,
+          business_line_id: l.business_line_id || null,
+          branch_id: l.branch_id || null,
+          item_id: null,
+          tax_id: null,
+          tax_rate_id: null,
+          account_code_snapshot: acc.code,
+          account_name_snapshot: acc.name,
+          counterparty_identifier_snapshot: header.counterparty_identifier || null,
+          counterparty_name_snapshot: header.counterparty_name || null,
+          created_by: userId,
+        };
+      });
 
       const { error: journalInsertError } = await supabase
         .from("journal_entry_lines")
@@ -2605,9 +2833,6 @@ export default function Page() {
 
       if (docUpdateError) throw docUpdateError;
 
-      // =========================
-      // Payments
-      // =========================
       const oldPaymentIds = await getPaymentIdsByTradeDoc(companyId, savedId);
 
       const usedPayments = payments.filter((p) => {
@@ -2665,49 +2890,123 @@ export default function Page() {
 
       setMessages([{ level: "warn", text: "Borrador guardado." }]);
       await loadDrafts();
+
+      if (closeAfterSave) {
+        closeEditor();
+      }
+
+      return savedId;
+    } catch (e: any) {
+      if (createdNewTradeDoc && savedIdForRollback) {
+        try {
+          await rollbackDraftArtifacts({
+            companyId,
+            tradeDocId: savedIdForRollback,
+            journalEntryId: journalEntryIdForRollback,
+          });
+        } catch {}
+      }
+
+      if (!createdNewTradeDoc && journalEntryIdForRollback) {
+        try {
+          const { data: existingAfterFail } = await supabase
+            .from("journal_entry_lines")
+            .select("id")
+            .eq("company_id", companyId)
+            .eq("journal_entry_id", journalEntryIdForRollback);
+
+          if (!existingAfterFail || existingAfterFail.length === 0) {
+            const backupLines = (previousJournalLines || []).map((r: any) => {
+              const { id, ...rest } = r;
+              return rest;
+            });
+
+            if (backupLines.length > 0) {
+              await supabase.from("journal_entry_lines").insert(backupLines as any);
+            }
+          }
+        } catch {}
+      }
+
+      setMessages([
+        {
+          level: "error",
+          text: e?.message || "No se pudo guardar el borrador.",
+        },
+      ]);
+
+      return null;
+    }
+  }
+  
+  async function saveDraftMVP() {
+    await saveDraftInternal(true);
+  }
+
+  async function markAsVigenteMVP() {
+    if (!companyId || !canEdit) return;
+
+    const ok = window.confirm(
+      "¿Registrar este documento? Se contabilizará directamente y dejará de estar en borrador."
+    );
+    if (!ok) return;
+
+    try {
+      setMessages([]);
+
+      let finalDocId = docId;
+
+      if (!finalDocId) {
+        finalDocId = await saveDraftInternal(false);
+      }
+
+      if (!finalDocId) {
+        throw new Error("No se pudo guardar el borrador antes de registrar.");
+      }
+
+      await registerDraftById(finalDocId);
+
+      setHeader((h) => ({
+        ...h,
+        status: "VIGENTE",
+      }));
+
+      setMessages([
+        { level: "warn", text: "Documento registrado (VIGENTE) y contabilizado correctamente." },
+      ]);
+
+      await loadDrafts();
+      clearSelection();
       closeEditor();
-        } catch (e: any) {
-          // rollback solo si el documento era nuevo;
-          // si era edición, no queremos borrar el borrador existente entero
-          if (createdNewTradeDoc && savedIdForRollback) {
-            try {
-              await rollbackDraftArtifacts({
-                companyId,
-                tradeDocId: savedIdForRollback,
-                journalEntryId: journalEntryIdForRollback,
-              });
-            } catch {}
-          }
+      clearForm();
+    } catch (e: any) {
+      setMessages([
+        { level: "error", text: e?.message || "No se pudo registrar el documento." },
+      ]);
+    }
+  }
 
-          // restaurar líneas anteriores del asiento si era edición
-          if (!createdNewTradeDoc && journalEntryIdForRollback) {
-            try {
-              const { data: existingAfterFail } = await supabase
-                .from("journal_entry_lines")
-                .select("id")
-                .eq("company_id", companyId)
-                .eq("journal_entry_id", journalEntryIdForRollback);
+  async function deleteDraftMVP() {
+    if (!docId) return;
+    if (!companyId || !canEdit) return;
 
-              if (!existingAfterFail || existingAfterFail.length === 0) {
-                const backupLines = (previousJournalLines || []).map((r: any) => {
-                  const { id, ...rest } = r;
-                  return rest;
-                });
+    const ok = window.confirm("¿Eliminar este borrador? No se puede deshacer.");
+    if (!ok) return;
 
-                if (backupLines.length > 0) {
-                  await supabase.from("journal_entry_lines").insert(backupLines as any);
-                }
-              }
-            } catch {}
-          }
+    try {
+      await deleteDraftInternal(docId);
 
-          setMessages([
-            {
-              level: "error",
-              text: e?.message || "No se pudo guardar el borrador.",
-            },
-          ]);
-        }
+      setMessages([{ level: "warn", text: "Borrador eliminado." }]);
+
+      clearForm();
+      closeEditor();
+      await loadDrafts();
+    } catch (e: any) {
+      setMessages([
+        { level: "error", text: e?.message || "No se pudo eliminar el borrador." },
+      ]);
+      await loadDrafts();
+    }
   }
 
   async function cancelDocMVP() {
@@ -2771,7 +3070,6 @@ export default function Page() {
             "counterparty_identifier_snapshot",
             "counterparty_name_snapshot",
             "reference",
-            "notes",
             "cancelled_at",
             "cancel_reason",
             "origin_doc_id",
@@ -2859,14 +3157,18 @@ export default function Page() {
       setDocId((h as any).id);
 
       const originId = (h as any).origin_doc_id ?? null;
+      let originRow: any = null;
       let originLabel = "";
+
       if (originId) {
         const { data: od } = await supabase
           .from("trade_docs")
-          .select("series,number")
+          .select("id,doc_type,fiscal_doc_code,series,number,issue_date,net_taxable,net_exempt,tax_total,grand_total,currency_code,status")
           .eq("company_id", companyId)
           .eq("id", originId)
           .maybeSingle();
+
+        originRow = od;
         originLabel = folioLabel((od as any)?.series, (od as any)?.number);
       }
 
@@ -2883,11 +3185,21 @@ export default function Page() {
         counterparty_identifier: (h as any).counterparty_identifier_snapshot || "",
         counterparty_name: (h as any).counterparty_name_snapshot || "",
         reference: (h as any).reference || "",
-        notes: (h as any).notes || "",
         cancelled_at: (h as any).cancelled_at || "",
         cancel_reason: (h as any).cancel_reason || "",
         origin_doc_id: originId,
         origin_label: originLabel,
+        origin_doc_type: originRow?.doc_type ?? null,
+        origin_fiscal_doc_code: originRow?.fiscal_doc_code ?? null,
+        origin_issue_date: originRow?.issue_date ?? null,
+        origin_currency_code: originRow?.currency_code ?? null,
+        origin_net_taxable: originRow?.net_taxable ?? null,
+        origin_net_exempt: originRow?.net_exempt ?? null,
+        origin_tax_total: originRow?.tax_total ?? null,
+        origin_grand_total: originRow?.grand_total ?? null,
+        origin_balance: originRow?.grand_total ?? null,
+        origin_payment_status: originRow ? "PENDIENTE" : null,
+        origin_status: originRow?.status ?? null,
       });
 
       const parsedLines: DocLine[] = (ls || []).map((r: any) => {
@@ -3014,7 +3326,7 @@ export default function Page() {
       );
 
       setEditorTab("CABECERA");
-      setOriginPanelOpen(false);
+      setOriginSearchOpen(false);
       setEditorOpen(true);
     } catch (e: any) {
       setMessages([{ level: "error", text: e?.message || "No se pudo abrir el borrador." }]);
@@ -3208,7 +3520,6 @@ export default function Page() {
           counterparty_identifier: String(r.counterparty_identifier || r.rut || r.rfc || r.nit || "").trim(),
           counterparty_name: String(r.counterparty_name || r.nombre || r.razon_social || "").trim(),
           reference: String(r.reference || r.referencia || "").trim(),
-          notes: String(r.notes || r.notas || "").trim(),
         }))
         .filter((x) => x.counterparty_identifier || x.counterparty_name || x.number || x.series);
       
@@ -3260,7 +3571,6 @@ export default function Page() {
         counterparty_identifier_snapshot: x.counterparty_identifier || null,
         counterparty_name_snapshot: x.counterparty_name || null,
         reference: x.reference || null,
-        notes: x.notes || null,
 
         net_taxable: 0,
         net_exempt: 0,
@@ -3673,14 +3983,14 @@ export default function Page() {
         openCreateCounterparty={openCreateCounterparty}
         resolveCounterpartyHeader={resolveCounterpartyHeader}
         needsOrigin={needsOrigin}
-        originPanelOpen={originPanelOpen}
-        setOriginPanelOpen={setOriginPanelOpen}
-        originQuery={originQuery}
-        setOriginQuery={setOriginQuery}
-        originLoading={originLoading}
-        originResults={originResults}
-        searchOriginDocs={searchOriginDocs}
-        pickOrigin={pickOrigin}
+        onOpenOriginSearch={() => {
+          setOriginSearchOpen(true);
+          setOriginResults([]);
+          setOriginOffset(0);
+          setOriginHasMore(false);
+          void searchOriginDocs(true);
+        }}
+        clearOrigin={clearOrigin}
         lines={lines}
         setLines={setLines}
         addDocLine={addDocLine}
@@ -3716,8 +4026,54 @@ export default function Page() {
         ellipsis={ellipsis}
         folioLabel={folioLabel}
         saveDraftMVP={saveDraftMVP}
-        markAsVigenteMVP={async () => {}}
+        markAsVigenteMVP={markAsVigenteMVP}
+        deleteDraftMVP={deleteDraftMVP}
         cancelDocMVP={cancelDocMVP}
+      />
+
+      <OriginDocSearchModal
+        open={originSearchOpen}
+        onClose={() => setOriginSearchOpen(false)}
+        canEdit={canEdit}
+        theme={{
+          header: theme.header,
+          glowA: theme.glowA,
+          glowB: theme.glowB,
+          btnPrimary: theme.btnPrimary,
+          btnSoft: theme.btnSoft,
+          card: theme.card,
+        }}
+        moneyDecimals={moneyDecimals}
+        formatNumber={formatNumber}
+        folioLabel={folioLabel}
+        filters={originFilters}
+        setFilters={setOriginFilters}
+        loading={originLoading}
+        loadingMore={originLoadingMore}
+        hasMore={originHasMore}
+        results={originResults}
+        onSearch={() => searchOriginDocs(true)}
+        onLoadMore={loadMoreOriginDocs}
+        onClearFilters={() => {
+          setOriginFilters({
+            fiscal_doc_code: "",
+            folio: "",
+            issue_date_from: "",
+            issue_date_to: "",
+            only_open_balance: true,
+            only_vigente: true,
+          });
+          setOriginResults([]);
+          setOriginOffset(0);
+          setOriginHasMore(false);
+        }}
+        onPick={pickOrigin}
+        onViewDoc={(doc) => {
+          console.log("Ver documento:", doc);
+        }}
+        headerCell={headerCell}
+        headerSub={headerSub}
+        bodyCell={bodyCell}
       />
 
       {/* =======================
@@ -3751,7 +4107,7 @@ export default function Page() {
           Sube un Excel con columnas:{" "}
           <b>
             doc_type, fiscal_doc_code, issue_date, due_date, series, number, currency_code,
-            counterparty_identifier, counterparty_name, reference, notes
+            counterparty_identifier, counterparty_name, reference
           </b>
           .
           <div className="mt-1 text-xs text-slate-500">Hoja recomendada: “Ventas”.</div>
