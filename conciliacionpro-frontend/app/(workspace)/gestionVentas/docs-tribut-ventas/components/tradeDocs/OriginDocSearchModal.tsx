@@ -13,6 +13,19 @@ const iconBtn =
 const iconBtnPrimary =
   "inline-flex h-9 w-9 items-center justify-center rounded-lg bg-slate-900 text-white hover:bg-slate-800";
 
+function statusBadgeClass(status?: DocStatus | null) {
+  if (status === "VIGENTE") {
+    return "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold bg-emerald-100 text-emerald-800";
+  }
+  if (status === "BORRADOR") {
+    return "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold bg-amber-100 text-amber-900";
+  }
+  if (status === "CANCELADO") {
+    return "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold bg-rose-100 text-rose-800";
+  }
+  return "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold bg-slate-100 text-slate-700";
+}
+
 type DocType = "INVOICE" | "CREDIT_NOTE" | "DEBIT_NOTE";
 type DocStatus = "BORRADOR" | "VIGENTE" | "CANCELADO";
 
@@ -263,7 +276,7 @@ export function OriginDocSearchModal(props: {
                 <div>
                   <h2 className="font-semibold text-slate-900">Resultados</h2>
                   <div className="text-[11px] text-slate-500">
-                    Documentos vigentes del mismo RUT/ID para asociar como origen.
+                    Documentos del mismo RUT/ID para asociar como origen.
                   </div>
                 </div>
 
@@ -276,16 +289,17 @@ export function OriginDocSearchModal(props: {
                 <div className="overflow-hidden shrink-0">
                   <table className="w-full table-fixed border-collapse text-sm">
                     <colgroup>
-                      <col style={{ width: "12%" }} />
-                      <col style={{ width: "10%" }} />
-                      <col style={{ width: "18%" }} />
                       <col style={{ width: "11%" }} />
-                      <col style={{ width: "11%" }} />
-                      <col style={{ width: "11%" }} />
-                      <col style={{ width: "11%" }} />
+                      <col style={{ width: "9%" }} />
                       <col style={{ width: "16%" }} />
+                      <col style={{ width: "10%" }} />
+                      <col style={{ width: "10%" }} />
+                      <col style={{ width: "10%" }} />
+                      <col style={{ width: "10%" }} />
+                      <col style={{ width: "10%" }} />
+                      <col style={{ width: "14%" }} />
                     </colgroup>
-                    <thead>
+                    <thead>                      
                       <tr>
                         <th className={headerCell}>
                           <b>Emisión</b>
@@ -298,6 +312,10 @@ export function OriginDocSearchModal(props: {
                         <th className={headerCell}>
                           <b>Folio</b>
                           <span className={headerSub}>serie / número</span>
+                        </th>
+                        <th className={headerCell}>
+                          <b>Estado</b>
+                          <span className={headerSub}>status</span>
                         </th>
                         <th className={cls(headerCell, "text-right")}>
                           <b>Afecto</b>
@@ -319,7 +337,7 @@ export function OriginDocSearchModal(props: {
                           <b>Acciones</b>
                           <span className={headerSub}>asociar / ver</span>
                         </th>
-                      </tr>
+                      </tr>                      
                     </thead>
                   </table>
                 </div>
@@ -330,20 +348,21 @@ export function OriginDocSearchModal(props: {
                 >
                   <table className="w-full table-fixed border-collapse text-sm">
                     <colgroup>
-                      <col style={{ width: "12%" }} />
-                      <col style={{ width: "10%" }} />
-                      <col style={{ width: "18%" }} />
                       <col style={{ width: "11%" }} />
-                      <col style={{ width: "11%" }} />
-                      <col style={{ width: "11%" }} />
-                      <col style={{ width: "11%" }} />
+                      <col style={{ width: "9%" }} />
                       <col style={{ width: "16%" }} />
+                      <col style={{ width: "10%" }} />
+                      <col style={{ width: "10%" }} />
+                      <col style={{ width: "10%" }} />
+                      <col style={{ width: "10%" }} />
+                      <col style={{ width: "10%" }} />
+                      <col style={{ width: "14%" }} />
                     </colgroup>
 
                     <tbody>
                       {results.length === 0 ? (
                         <tr>
-                          <td className="p-4 text-sm text-slate-600" colSpan={8}>
+                          <td className="p-4 text-sm text-slate-600" colSpan={9}>
                             {loading ? "Buscando..." : "Sin resultados."}
                           </td>
                         </tr>
@@ -368,6 +387,12 @@ export function OriginDocSearchModal(props: {
                                 >
                                   {folioLabel(r.series, r.number)}
                                 </div>
+                              </td>
+
+                              <td className={bodyCell}>
+                                <span className={statusBadgeClass(r.status)}>
+                                  {r.status || "—"}
+                                </span>
                               </td>
 
                               <td className={cls(bodyCell, "text-right")}>
@@ -417,7 +442,7 @@ export function OriginDocSearchModal(props: {
 
                       {loadingMore ? (
                         <tr>
-                          <td className="p-4 text-center text-sm text-slate-500" colSpan={8}>
+                          <td className="p-4 text-center text-sm text-slate-500" colSpan={9}>
                             Cargando más documentos...
                           </td>
                         </tr>
@@ -425,7 +450,7 @@ export function OriginDocSearchModal(props: {
 
                       {!hasMore && results.length > 0 ? (
                         <tr>
-                          <td className="p-4 text-center text-xs text-slate-400" colSpan={8}>
+                          <td className="p-4 text-center text-xs text-slate-400" colSpan={9}>
                             No hay más resultados.
                           </td>
                         </tr>

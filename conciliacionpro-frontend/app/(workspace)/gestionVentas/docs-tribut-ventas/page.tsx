@@ -797,8 +797,53 @@ export default function Page() {
   // editor modal
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorTab, setEditorTab] = useState<EditorTab>("CABECERA");
+  
 
   const [docId, setDocId] = useState<string | null>(null);
+
+    // viewer modal (solo lectura)
+    const [viewerOpen, setViewerOpen] = useState(false);
+    const [viewerDocId, setViewerDocId] = useState<string | null>(null);
+    const [viewerEditorTab, setViewerEditorTab] = useState<EditorTab>("CABECERA");
+    const [viewerHeader, setViewerHeader] = useState<DocHeader>({
+      doc_type: "INVOICE",
+      fiscal_doc_code: "",
+      status: "BORRADOR",
+      issue_date: todayISO(),
+      due_date: todayISO(),
+      series: "",
+      number: "",
+      currency_code: "CLP",
+      branch_id: "",
+      counterparty_identifier: "",
+      counterparty_name: "",
+      reference: "",
+      cancelled_at: "",
+      cancel_reason: "",
+      origin_doc_id: null,
+      origin_label: "",
+      origin_doc_type: null,
+      origin_fiscal_doc_code: null,
+      origin_issue_date: null,
+      origin_currency_code: null,
+      origin_net_taxable: null,
+      origin_net_exempt: null,
+      origin_tax_total: null,
+      origin_grand_total: null,
+      origin_balance: null,
+      origin_payment_status: null,
+      origin_status: null,
+    });
+
+    const [viewerLines, setViewerLines] = useState<DocLine[]>(
+      Array.from({ length: 4 }, (_, i) => makeDocLine(i + 1))
+    );
+
+    const [viewerPayments, setViewerPayments] = useState<PaymentRow[]>([]);
+
+    const [viewerJournalLines, setViewerJournalLines] = useState<JournalLine[]>(
+      Array.from({ length: 4 }, (_, i) => makeJournalLine(i + 1))
+    );
 
   const [header, setHeader] = useState<DocHeader>({
     doc_type: "INVOICE",
@@ -886,7 +931,7 @@ export default function Page() {
     issue_date_from: "",
     issue_date_to: "",
     only_open_balance: true,
-    only_vigente: true,
+    only_vigente: false,
   });
 
   // Drafts list
@@ -2307,7 +2352,7 @@ export default function Page() {
       issue_date_from: "",
       issue_date_to: "",
       only_open_balance: true,
-      only_vigente: true,
+      only_vigente: false,
     });
     setOriginHasMore(false);
     setOriginLoadingMore(false);
@@ -2332,17 +2377,9 @@ export default function Page() {
     if (!companyId) return;
 
     const counterpartyIdentifierRaw = String(header.counterparty_identifier || "").trim();
-    if (!counterpartyIdentifierRaw) return;
+      if (!counterpartyIdentifierRaw) return;
 
-    const resolvedCounterpartyId = await resolveCounterpartyIdByIdentifier(counterpartyIdentifierRaw);
-    if (!resolvedCounterpartyId) {
-      if (reset) {
-        setOriginResults([]);
-        setOriginHasMore(false);
-        setOriginOffset(0);
-      }
-      return;
-    }
+      const resolvedCounterpartyId = await resolveCounterpartyIdByIdentifier(counterpartyIdentifierRaw);
 
     if (reset) {
       setOriginLoading(true);
@@ -2370,19 +2407,28 @@ export default function Page() {
           tax_total,
           grand_total,
           currency_code,
-          status
+          status,
+          counterparty_id,
+          counterparty_identifier_snapshot
         `)
         .eq("company_id", companyId)
-        .eq("counterparty_id", resolvedCounterpartyId)
         .eq("doc_type", "INVOICE")
         .order("issue_date", { ascending: false })
         .order("created_at", { ascending: false })
         .range(from, to);
 
+      if (resolvedCounterpartyId) {
+        query = query.or(
+          `counterparty_id.eq.${resolvedCounterpartyId},counterparty_identifier_snapshot.eq.${counterpartyIdentifierRaw}`
+        ) as any;
+      } else {
+        query = query.eq("counterparty_identifier_snapshot", counterpartyIdentifierRaw);
+      }
+
       if (originFilters.only_vigente) {
         query = query.eq("status", "VIGENTE");
       } else {
-        query = query.neq("status", "BORRADOR").neq("status", "CANCELADO");
+        query = query.neq("status", "CANCELADO");
       }
 
       if (originFilters.fiscal_doc_code.trim()) {
@@ -2455,6 +2501,199 @@ export default function Page() {
     await searchOriginDocs(false);
   }
 
+  async function loadOriginLines(originTradeDocId: string): Promise<DocLine[]> {
+  const { data, error } = await supabase
+    .from("trade_doc_lines")
+    .select("line_no,item_id,sku,description,qty,unit_price,tax_kind,exempt_amount,taxable_amount,tax_rate,tax_amount,line_total")
+    .eq("company_id", companyId)
+    .eq("trade_doc_id", originTradeDocId)
+    .order("line_no", { ascending: true });
+
+  if (error) throw error;
+
+  const parsed: DocLine[] = (((data as any[]) || []).map((r: any) => {
+    const taxKind = String(r.tax_kind || "").toUpperCase();
+    const isTaxable = taxKind === "EXENTO" ? false : true;
+
+    const exemptAmount = Number(r.exempt_amount || 0);
+    const taxableAmount = Number(r.taxable_amount || 0);
+    const taxAmount = Number(r.tax_amount || 0);
+    const lineTotal = Number(r.line_total || 0);
+
+    return {
+      line_no: Number(r.line_no) || 1,
+      item_id: r.item_id || null,
+      sku: r.sku || "",
+      description: r.description || "",
+      qty: r.qty != null ? String(r.qty) : "1",
+      unit_price: r.unit_price != null ? String(r.unit_price) : "",
+      is_taxable: isTaxable,
+      tax_rate: r.tax_rate != null ? String(r.tax_rate) : (defaultTaxRate || "19"),
+      ex_override: exemptAmount > 0 ? String(exemptAmount) : "",
+      af_override: taxableAmount > 0 ? String(taxableAmount) : "",
+      iva_override: taxAmount > 0 ? String(taxAmount) : "",
+      total_override: lineTotal > 0 ? String(lineTotal) : "",
+    };
+  })) as DocLine[];
+
+  return parsed.length >= 4
+    ? renumber(parsed)
+    : renumber([
+        ...parsed,
+        ...Array.from({ length: Math.max(4 - parsed.length, 0) }, (_, i) =>
+          makeDocLine(parsed.length + i + 1)
+        ),
+      ]);
+}
+
+async function loadOriginPayments(originTradeDocId: string): Promise<PaymentRow[]> {
+  const { data: payData, error: payError } = await supabase
+    .from("payment_allocations")
+    .select(`
+      allocated_amount,
+      payments (
+        id,
+        method,
+        reference,
+        card_kind,
+        card_last4,
+        auth_code,
+        total_amount,
+        extra
+      )
+    `)
+    .eq("company_id", companyId)
+    .eq("trade_doc_id", originTradeDocId);
+
+  if (payError) throw payError;
+
+  let parsedPayments: PaymentRow[] = (((payData as any[]) || []).map((r: any) => {
+    const p = Array.isArray(r.payments) ? r.payments[0] : r.payments;
+
+    return {
+      id: uid(), // nuevo id UI para el nuevo documento
+      method: (p?.method || "TRANSFERENCIA") as PaymentRow["method"],
+      amount: r.allocated_amount != null
+        ? String(r.allocated_amount)
+        : String(p?.total_amount ?? ""),
+      card_kind: (p?.card_kind || "") as PaymentRow["card_kind"],
+      card_last4: String(p?.card_last4 || ""),
+      auth_code: String(p?.auth_code || ""),
+      reference: String(p?.reference || ""),
+    };
+  })) as PaymentRow[];
+
+  if (parsedPayments.length === 0) {
+    const { data: payFallback, error: payFallbackError } = await supabase
+      .from("payments")
+      .select("id,method,reference,card_kind,card_last4,auth_code,total_amount,extra")
+      .eq("company_id", companyId);
+
+    if (payFallbackError) throw payFallbackError;
+
+    parsedPayments = (((payFallback as any[]) || [])
+      .filter((p: any) => p?.extra?.trade_doc_id === originTradeDocId)
+      .map((p: any) => ({
+        id: uid(),
+        method: (p.method || "TRANSFERENCIA") as PaymentRow["method"],
+        amount: String(p.total_amount ?? ""),
+        card_kind: (p.card_kind || "") as PaymentRow["card_kind"],
+        card_last4: String(p.card_last4 || ""),
+        auth_code: String(p.auth_code || ""),
+        reference: String(p.reference || ""),
+      }))) as PaymentRow[];
+  }
+
+  return parsedPayments;
+}
+
+async function loadOriginJournalReversed(originTradeDocId: string): Promise<JournalLine[]> {
+  const { data: originDoc, error: originDocError } = await supabase
+    .from("trade_docs")
+    .select("journal_entry_id")
+    .eq("company_id", companyId)
+    .eq("id", originTradeDocId)
+    .maybeSingle();
+
+  if (originDocError) throw originDocError;
+
+  const originJournalEntryId = (originDoc as any)?.journal_entry_id ?? null;
+
+  if (!originJournalEntryId) {
+    return Array.from({ length: 4 }, (_, i) => makeJournalLine(i + 1));
+  }
+
+  const { data: jlData, error: jlError } = await supabase
+    .from("journal_entry_lines")
+    .select(`
+      line_no,
+      line_description,
+      debit,
+      credit,
+      account_code_snapshot,
+      business_line_id,
+      branch_id,
+      business_lines (
+        id,
+        code,
+        name
+      ),
+      branches (
+        id,
+        code,
+        name
+      )
+    `)
+    .eq("company_id", companyId)
+    .eq("journal_entry_id", originJournalEntryId)
+    .order("line_no", { ascending: true });
+
+  if (jlError) throw jlError;
+
+  const reversed: JournalLine[] = (((jlData as any[]) || []).map((r: any, idx: number) => {
+    const bu = Array.isArray(r.business_lines) ? r.business_lines[0] : r.business_lines;
+    const br = Array.isArray(r.branches) ? r.branches[0] : r.branches;
+
+    return {
+      line_no: idx + 1,
+      account_code: String(r.account_code_snapshot || ""),
+      description: String(r.line_description || ""),
+      debit: r.credit != null && Number(r.credit) > 0 ? String(r.credit) : "",
+      credit: r.debit != null && Number(r.debit) > 0 ? String(r.debit) : "",
+
+      cost_center_id: null,
+      business_line_id: r.business_line_id || null,
+      branch_id: r.branch_id || null,
+
+      cost_center_code: "",
+      business_line_code: String(bu?.code || ""),
+      branch_code: String(br?.code || ""),
+    };
+  })) as JournalLine[];
+
+  return reversed.length >= 4
+    ? renumber(reversed)
+    : renumber([
+        ...reversed,
+        ...Array.from({ length: Math.max(4 - reversed.length, 0) }, (_, i) =>
+          makeJournalLine(reversed.length + i + 1)
+        ),
+      ]);
+}
+
+async function hydrateTabsFromOrigin(originTradeDocId: string) {
+  const [originLines, originPayments, originJournalReversed] = await Promise.all([
+    loadOriginLines(originTradeDocId),
+    loadOriginPayments(originTradeDocId),
+    loadOriginJournalReversed(originTradeDocId),
+  ]);
+
+  setLines(originLines);
+  setPayments(originPayments);
+  setJournalAutoMode(false);
+  setJournalLines(originJournalReversed);
+}
+
   function clearOrigin() {
     setHeader((h) => ({
       ...h,
@@ -2474,24 +2713,38 @@ export default function Page() {
     }));
   }
 
-  function pickOrigin(d: OriginDocLite) {
-    setHeaderPatch({
-      origin_doc_id: d.id,
-      origin_label: folioLabel(d.series, d.number),
-      origin_doc_type: d.doc_type ?? null,
-      origin_fiscal_doc_code: d.fiscal_doc_code ?? null,
-      origin_issue_date: d.issue_date ?? null,
-      origin_currency_code: d.currency_code ?? null,
-      origin_net_taxable: d.net_taxable ?? null,
-      origin_net_exempt: d.net_exempt ?? null,
-      origin_tax_total: d.tax_total ?? null,
-      origin_grand_total: d.grand_total ?? null,
-      origin_balance: d.balance ?? null,
-      origin_payment_status: null,
-      origin_status: d.status ?? null,
-    });
+  async function pickOrigin(d: OriginDocLite) {
+    try {
+      setMessages([]);
 
-    setOriginSearchOpen(false);
+      setHeaderPatch({
+        origin_doc_id: d.id,
+        origin_label: folioLabel(d.series, d.number),
+        origin_doc_type: d.doc_type ?? null,
+        origin_fiscal_doc_code: d.fiscal_doc_code ?? null,
+        origin_issue_date: d.issue_date ?? null,
+        origin_currency_code: d.currency_code ?? null,
+        origin_net_taxable: d.net_taxable ?? null,
+        origin_net_exempt: d.net_exempt ?? null,
+        origin_tax_total: d.tax_total ?? null,
+        origin_grand_total: d.grand_total ?? null,
+        origin_balance: d.balance ?? null,
+        origin_payment_status: null,
+        origin_status: d.status ?? null,
+      });
+
+      await hydrateTabsFromOrigin(d.id);
+
+      setEditorTab("LINEAS");
+      setOriginSearchOpen(false);
+    } catch (e: any) {
+      setMessages([
+        {
+          level: "error",
+          text: e?.message || "No se pudo copiar la información del documento origen.",
+        },
+      ]);
+    }
   }
 
   /**
@@ -2990,6 +3243,8 @@ export default function Page() {
     if (!docId) return;
     if (!companyId || !canEdit) return;
 
+    setMessages([]);
+
     const ok = window.confirm("¿Eliminar este borrador? No se puede deshacer.");
     if (!ok) return;
 
@@ -3198,7 +3453,7 @@ export default function Page() {
         origin_tax_total: originRow?.tax_total ?? null,
         origin_grand_total: originRow?.grand_total ?? null,
         origin_balance: originRow?.grand_total ?? null,
-        origin_payment_status: originRow ? "PENDIENTE" : null,
+        origin_payment_status: null,
         origin_status: originRow?.status ?? null,
       });
 
@@ -3336,16 +3591,25 @@ export default function Page() {
 
   async function deleteDraftInternal(draftId: string) {
     if (!companyId) throw new Error("Falta companyId.");
+    if (!draftId) throw new Error("Falta draftId.");
 
+    // 1) Validar que el documento exista y que siga siendo BORRADOR
     const { data: docRow, error: docRowError } = await supabase
       .from("trade_docs")
-      .select("journal_entry_id,status")
+      .select("id,journal_entry_id,status")
       .eq("company_id", companyId)
       .eq("id", draftId)
       .maybeSingle();
 
     if (docRowError) throw docRowError;
+    if (!docRow) throw new Error("No se encontró el borrador.");
+    if (docRow.status !== "BORRADOR") {
+      throw new Error("Solo se pueden eliminar documentos en estado BORRADOR.");
+    }
 
+    const journalEntryId = (docRow as any).journal_entry_id as string | null;
+
+    // 2) Buscar pagos relacionados por allocation
     const { data: paymentRows, error: paymentRowsError } = await supabase
       .from("payment_allocations")
       .select("payment_id")
@@ -3358,14 +3622,7 @@ export default function Page() {
       new Set(((paymentRows as any[]) || []).map((x) => x.payment_id).filter(Boolean))
     );
 
-    const { error: deleteDocLinesError } = await supabase
-      .from("trade_doc_lines")
-      .delete()
-      .eq("company_id", companyId)
-      .eq("trade_doc_id", draftId);
-
-    if (deleteDocLinesError) throw deleteDocLinesError;
-
+    // 3) Borrar asignaciones de pago primero
     const { error: deleteAllocError } = await supabase
       .from("payment_allocations")
       .delete()
@@ -3374,6 +3631,7 @@ export default function Page() {
 
     if (deleteAllocError) throw deleteAllocError;
 
+    // 4) Borrar pagos relacionados
     if (paymentIds.length > 0) {
       const { error: deletePaymentsError } = await supabase
         .from("payments")
@@ -3384,9 +3642,17 @@ export default function Page() {
       if (deletePaymentsError) throw deletePaymentsError;
     }
 
-    if ((docRow as any)?.journal_entry_id) {
-      const journalEntryId = (docRow as any).journal_entry_id as string;
+    // 5) Borrar líneas del documento
+    const { error: deleteDocLinesError } = await supabase
+      .from("trade_doc_lines")
+      .delete()
+      .eq("company_id", companyId)
+      .eq("trade_doc_id", draftId);
 
+    if (deleteDocLinesError) throw deleteDocLinesError;
+
+    // 6) Borrar asiento borrador y sus líneas, solo si existe y sigue en DRAFT
+    if (journalEntryId) {
       const { data: journalRow, error: journalRowError } = await supabase
         .from("journal_entries")
         .select("id,status")
@@ -3395,6 +3661,15 @@ export default function Page() {
         .maybeSingle();
 
       if (journalRowError) throw journalRowError;
+
+      const { error: unlinkJournalError } = await supabase
+        .from("trade_docs")
+        .update({ journal_entry_id: null })
+        .eq("company_id", companyId)
+        .eq("id", draftId)
+        .eq("status", "BORRADOR");
+
+      if (unlinkJournalError) throw unlinkJournalError;
 
       if (journalRow && journalRow.status === "DRAFT") {
         const { error: deleteJournalLinesError } = await supabase
@@ -3416,19 +3691,290 @@ export default function Page() {
       }
     }
 
-    const { error } = await supabase
+    // 7) Borrar documento principal y VALIDAR que realmente se borró
+    const { data: deletedDocs, error: deleteDocError } = await supabase
       .from("trade_docs")
       .delete()
       .eq("company_id", companyId)
       .eq("id", draftId)
-      .eq("status", "BORRADOR");
+      .eq("status", "BORRADOR")
+      .select("id");
 
-    if (error) throw error;
+    if (deleteDocError) throw deleteDocError;
+
+    if (!deletedDocs || deletedDocs.length === 0) {
+      throw new Error("El borrador no pudo eliminarse de trade_docs.");
+    }
+  }
+
+  async function openViewDoc(doc: OriginDocLite) {
+    if (!companyId) return;
+
+    try {
+      setMessages([]);
+
+      const tradeDocId = doc.id;
+
+      const { data: row, error: rowError } = await supabase
+        .from("trade_docs")
+        .select(`
+          id,
+          doc_type,
+          status,
+          issue_date,
+          due_date,
+          series,
+          number,
+          currency_code,
+          branch_id,
+          counterparty_identifier_snapshot,
+          counterparty_name_snapshot,
+          reference,
+          cancelled_at,
+          cancel_reason,
+          origin_doc_id,
+          fiscal_doc_code,
+          journal_entry_id
+        `)
+        .eq("company_id", companyId)
+        .eq("id", tradeDocId)
+        .maybeSingle();
+
+      if (rowError) throw rowError;
+      if (!row) throw new Error("No se encontró el documento.");
+
+      const { data: lineRows, error: lineError } = await supabase
+        .from("trade_doc_lines")
+        .select("line_no,item_id,sku,description,qty,unit_price,tax_kind,exempt_amount,taxable_amount,tax_rate,tax_amount,line_total")
+        .eq("company_id", companyId)
+        .eq("trade_doc_id", tradeDocId)
+        .order("line_no", { ascending: true });
+
+      if (lineError) throw lineError;
+
+      const { data: payAllocRows, error: payAllocError } = await supabase
+        .from("payment_allocations")
+        .select(`
+          allocated_amount,
+          payments (
+            id,
+            method,
+            reference,
+            card_kind,
+            card_last4,
+            auth_code,
+            total_amount,
+            extra
+          )
+        `)
+        .eq("company_id", companyId)
+        .eq("trade_doc_id", tradeDocId);
+
+      if (payAllocError) throw payAllocError;
+
+      let parsedPayments: PaymentRow[] = (((payAllocRows as any[]) || []).map((r: any) => {
+        const p = Array.isArray(r.payments) ? r.payments[0] : r.payments;
+
+        return {
+          id: String(p?.id || uid()),
+          method: (p?.method || "TRANSFERENCIA") as PaymentRow["method"],
+          amount: r.allocated_amount != null
+            ? String(r.allocated_amount)
+            : String(p?.total_amount ?? ""),
+          card_kind: (p?.card_kind || "") as PaymentRow["card_kind"],
+          card_last4: String(p?.card_last4 || ""),
+          auth_code: String(p?.auth_code || ""),
+          reference: String(p?.reference || ""),
+        };
+      })) as PaymentRow[];
+
+      if (parsedPayments.length === 0) {
+        const { data: payFallback, error: payFallbackError } = await supabase
+          .from("payments")
+          .select("id,method,reference,card_kind,card_last4,auth_code,total_amount,extra")
+          .eq("company_id", companyId);
+
+        if (payFallbackError) throw payFallbackError;
+
+        parsedPayments = (((payFallback as any[]) || [])
+          .filter((p: any) => p?.extra?.trade_doc_id === tradeDocId)
+          .map((p: any) => ({
+            id: String(p.id || uid()),
+            method: (p.method || "TRANSFERENCIA") as PaymentRow["method"],
+            amount: String(p.total_amount ?? ""),
+            card_kind: (p.card_kind || "") as PaymentRow["card_kind"],
+            card_last4: String(p.card_last4 || ""),
+            auth_code: String(p.auth_code || ""),
+            reference: String(p.reference || ""),
+          }))) as PaymentRow[];
+      }
+
+      let originRow: any = null;
+      let originLabel = "";
+      const originId = (row as any).origin_doc_id ?? null;
+
+      if (originId) {
+        const { data: od } = await supabase
+          .from("trade_docs")
+          .select("id,doc_type,fiscal_doc_code,series,number,issue_date,net_taxable,net_exempt,tax_total,grand_total,currency_code,status")
+          .eq("company_id", companyId)
+          .eq("id", originId)
+          .maybeSingle();
+
+        originRow = od;
+        originLabel = folioLabel((od as any)?.series, (od as any)?.number);
+      }
+
+      const parsedLines: DocLine[] = (((lineRows as any[]) || []).map((r: any) => {
+        const taxKind = String(r.tax_kind || "").toUpperCase();
+        const isTaxable = taxKind === "EXENTO" ? false : true;
+
+        const exemptAmount = Number(r.exempt_amount || 0);
+        const taxableAmount = Number(r.taxable_amount || 0);
+        const taxAmount = Number(r.tax_amount || 0);
+        const lineTotal = Number(r.line_total || 0);
+
+        return {
+          line_no: Number(r.line_no) || 1,
+          item_id: r.item_id || null,
+          sku: r.sku || "",
+          description: r.description || "",
+          qty: r.qty != null ? String(r.qty) : "1",
+          unit_price: r.unit_price != null ? String(r.unit_price) : "",
+          is_taxable: isTaxable,
+          tax_rate: r.tax_rate != null ? String(r.tax_rate) : (defaultTaxRate || "19"),
+          ex_override: exemptAmount > 0 ? String(exemptAmount) : "",
+          af_override: taxableAmount > 0 ? String(taxableAmount) : "",
+          iva_override: taxAmount > 0 ? String(taxAmount) : "",
+          total_override: lineTotal > 0 ? String(lineTotal) : "",
+        };
+      })) as DocLine[];
+
+      let journalRows: JournalLine[] = [];
+      const journalEntryId = (row as any).journal_entry_id ?? null;
+
+      if (journalEntryId) {
+        const { data: jlData, error: jlError } = await supabase
+          .from("journal_entry_lines")
+          .select(`
+            line_no,
+            line_description,
+            debit,
+            credit,
+            account_code_snapshot,
+            business_line_id,
+            branch_id,
+            business_lines (
+              id,
+              code,
+              name
+            ),
+            branches (
+              id,
+              code,
+              name
+            )
+          `)
+          .eq("company_id", companyId)
+          .eq("journal_entry_id", journalEntryId)
+          .order("line_no", { ascending: true });
+
+        if (jlError) throw jlError;
+
+        journalRows = ((jlData as any[]) || []).map((r: any) => {
+          const bu = Array.isArray(r.business_lines) ? r.business_lines[0] : r.business_lines;
+          const br = Array.isArray(r.branches) ? r.branches[0] : r.branches;
+
+          return {
+            line_no: Number(r.line_no) || 1,
+            account_code: String(r.account_code_snapshot || ""),
+            description: String(r.line_description || ""),
+            debit: r.debit != null ? String(r.debit) : "",
+            credit: r.credit != null ? String(r.credit) : "",
+            cost_center_id: null,
+            business_line_id: r.business_line_id || null,
+            branch_id: r.branch_id || null,
+            cost_center_code: "",
+            business_line_code: String(bu?.code || ""),
+            branch_code: String(br?.code || ""),
+          };
+        });
+      }
+
+      setViewerDocId(tradeDocId);
+
+      setViewerHeader({
+        doc_type: (row as any).doc_type,
+        fiscal_doc_code: String((row as any).fiscal_doc_code ?? ""),
+        status: (row as any).status,
+        issue_date: (row as any).issue_date || todayISO(),
+        due_date: (row as any).due_date || (row as any).issue_date || todayISO(),
+        series: (row as any).series || "",
+        number: (row as any).number || "",
+        currency_code: (row as any).currency_code || baseCurrency,
+        branch_id: (row as any).branch_id || "",
+        counterparty_identifier: (row as any).counterparty_identifier_snapshot || "",
+        counterparty_name: (row as any).counterparty_name_snapshot || "",
+        reference: (row as any).reference || "",
+        cancelled_at: (row as any).cancelled_at || "",
+        cancel_reason: (row as any).cancel_reason || "",
+        origin_doc_id: originId,
+        origin_label: originLabel,
+        origin_doc_type: originRow?.doc_type ?? null,
+        origin_fiscal_doc_code: originRow?.fiscal_doc_code ?? null,
+        origin_issue_date: originRow?.issue_date ?? null,
+        origin_currency_code: originRow?.currency_code ?? null,
+        origin_net_taxable: originRow?.net_taxable ?? null,
+        origin_net_exempt: originRow?.net_exempt ?? null,
+        origin_tax_total: originRow?.tax_total ?? null,
+        origin_grand_total: originRow?.grand_total ?? null,
+        origin_balance: originRow?.grand_total ?? null,
+        origin_payment_status: null,
+        origin_status: originRow?.status ?? null,
+      });
+
+      setViewerLines(
+        parsedLines.length >= 4
+          ? renumber(parsedLines)
+          : renumber([
+              ...parsedLines,
+              ...Array.from({ length: Math.max(4 - parsedLines.length, 0) }, (_, i) =>
+                makeDocLine(parsedLines.length + i + 1)
+              ),
+            ])
+      );
+
+      setViewerPayments(parsedPayments);
+
+      setViewerJournalLines(
+        journalRows.length >= 4
+          ? renumber(journalRows)
+          : renumber([
+              ...journalRows,
+              ...Array.from({ length: Math.max(4 - journalRows.length, 0) }, (_, i) =>
+                makeJournalLine(journalRows.length + i + 1)
+              ),
+            ])
+      );
+
+      setViewerEditorTab("CABECERA");
+      setViewerOpen(true);
+    } catch (e: any) {
+      setMessages([
+        {
+          level: "error",
+          text: e?.message || "No se pudo abrir el documento en modo consulta.",
+        },
+      ]);
+    }
   }
 
 
   async function deleteDraft(draftId: string) {
     if (!companyId || !canEdit) return;
+
+    setMessages([]);
+
     const ok = confirm("¿Eliminar este borrador? No se puede deshacer.");
     if (!ok) return;
 
@@ -3465,6 +4011,21 @@ export default function Page() {
     if (!header.branch_id) return "";
     return branchById[header.branch_id]?.code || "";
   }, [header.branch_id, branchById]);
+
+  const viewerHeaderBranchCode = useMemo(() => {
+    if (!viewerHeader.branch_id) return "";
+    return branchById[viewerHeader.branch_id]?.code || "";
+  }, [viewerHeader.branch_id, branchById]);
+
+  function setViewerHeaderBranchCode(rawCode: string) {
+    const typedCode = String(rawCode || "").trim();
+    const foundBranch = typedCode ? branchByCode[typedCode] : null;
+
+    setViewerHeader((h) => ({
+      ...h,
+      branch_id: foundBranch?.id || "",
+    }));
+  }
   
   const accountPolicyByCode = useMemo(() => {
     const map: Record<
@@ -3641,6 +4202,8 @@ export default function Page() {
     if (!canEdit || !companyId) return;
     if (selectedIds.length === 0) return;
 
+    setMessages([]);
+
     const ok = confirm(`¿Eliminar ${selectedIds.length} borrador(es)? No se puede deshacer.`);
     if (!ok) return;
 
@@ -3685,11 +4248,12 @@ export default function Page() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <button className={theme.btnGlass} onClick={loadDrafts}>
+              <button type="button" className={theme.btnGlass} onClick={loadDrafts}>
                 {loadingDrafts ? "Cargando..." : "Refrescar"}
               </button>
 
               <button
+                type="button"
                 className={cls(theme.btnGlass, !canEdit && "opacity-60 cursor-not-allowed")}
                 disabled={!canEdit}
                 onClick={openImport}
@@ -3699,6 +4263,7 @@ export default function Page() {
               </button>
 
               <button
+                type="button"
                 className={cls(theme.btnGlass, !canEdit && "opacity-60 cursor-not-allowed")}
                 disabled={!canEdit}
                 onClick={openNewDoc}
@@ -3749,20 +4314,22 @@ export default function Page() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <button className={theme.btnSoft} onClick={loadDrafts}>
+                <button type="button" className={theme.btnSoft} onClick={loadDrafts}>
                   {loadingDrafts ? "Cargando..." : "Refrescar"}
                 </button>
 
                 {drafts.length ? (
                   <>
-                    <button className={theme.btnSoft} onClick={toggleSelectAll} disabled={!canEdit}>
+                    <button type="button" className={theme.btnSoft} onClick={toggleSelectAll} disabled={!canEdit}>
                       {allSelected ? "Quitar selección" : "Seleccionar todo"}
                     </button>
-                    <button className={theme.btnSoft} onClick={clearSelection}>
+
+                    <button type="button" className={theme.btnSoft} onClick={clearSelection}>
                       Limpiar
                     </button>
 
                     <button
+                      type="button"
                       className={cls(theme.btnPrimary, (!canEdit || selectedIds.length === 0) && "opacity-60 cursor-not-allowed")}
                       disabled={!canEdit || selectedIds.length === 0}
                       onClick={bulkRegisterSelected}
@@ -3772,6 +4339,7 @@ export default function Page() {
                     </button>
 
                     <button
+                      type="button"
                       className={cls(theme.btnSoft, (!canEdit || selectedIds.length === 0) && "opacity-60 cursor-not-allowed")}
                       disabled={!canEdit || selectedIds.length === 0}
                       onClick={bulkDeleteSelected}
@@ -3924,7 +4492,11 @@ export default function Page() {
                                   type="button"
                                   className={cls(iconBtnDanger, !canEdit && "opacity-60 cursor-not-allowed")}
                                   disabled={!canEdit}
-                                  onClick={() => deleteDraft(d.id)}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    void deleteDraft(d.id);
+                                  }}
                                   title="Eliminar"
                                   aria-label="Eliminar"
                                 >
@@ -3952,6 +4524,7 @@ export default function Page() {
       <TradeDocEditorModal
         open={editorOpen}
         onClose={closeEditor}
+        zIndexClass="z-50"
         theme={{
           header: theme.header,
           glowA: theme.glowA,
@@ -4031,6 +4604,105 @@ export default function Page() {
         cancelDocMVP={cancelDocMVP}
       />
 
+      <TradeDocEditorModal
+        open={viewerOpen}
+        onClose={() => setViewerOpen(false)}
+        zIndexClass="z-[90]"
+        mode="view"
+        theme={{
+          header: theme.header,
+          glowA: theme.glowA,
+          glowB: theme.glowB,
+          btnPrimary: theme.btnPrimary,
+          btnSoft: theme.btnSoft,
+          card: theme.card,
+        }}
+        title={viewerDocId ? `Ver documento (${viewerDocId.slice(0, 8)}…)` : "Ver documento"}
+        subtitle="Ventas • Consulta"
+        widthClass="w-[min(1200px,96vw)]"
+        canEdit={false}
+        showCancelButton={false}
+        docId={viewerDocId}
+        header={viewerHeader}
+        setHeader={setViewerHeader}
+        headerBranchCode={viewerHeaderBranchCode}
+        setHeaderBranchCode={setViewerHeaderBranchCode}
+        editorTab={viewerEditorTab}
+        setEditorTab={setViewerEditorTab}
+        fiscalCfg={fiscalCfg}
+        fiscalDocTypes={fiscalDocTypes}
+        baseCurrency={baseCurrency}
+        branches={branches}
+        items={items}
+        businessLines={businessLines}
+        counterpartiesAvailable={false}
+        counterpartyMap={{}}
+        openCreateCounterparty={() => {}}
+        resolveCounterpartyHeader={() => {}}
+        needsOrigin={viewerHeader.doc_type === "CREDIT_NOTE" || viewerHeader.doc_type === "DEBIT_NOTE"}
+        onOpenOriginSearch={() => {}}
+        clearOrigin={() => {}}
+        lines={viewerLines}
+        setLines={setViewerLines}
+        addDocLine={() => {}}
+        removeDocLine={() => {}}
+        updateDocLine={() => {}}
+        payments={viewerPayments}
+        addPaymentRow={() => {}}
+        removePaymentRow={() => {}}
+        updatePaymentRow={() => {}}
+        journalLines={viewerJournalLines}
+        addJournalLine={() => {}}
+        removeJournalLine={() => {}}
+        updateJournalLine={() => {}}
+        journalAutoMode={false}
+        recalcJournalAuto={() => {}}
+        accounts={accounts}
+        accByCode={accByCode}
+        accountPolicyByCode={accountPolicyByCode}
+        headerCell={headerCell}
+        headerSub={headerSub}
+        bodyCell={bodyCell}
+        cellInputBase={cellInputBase}
+        cellInputRight={cellInputRight}
+        moneyDecimals={moneyDecimals}
+        totals={{
+          net_taxable: viewerLines.reduce((s, l) => s + calcLineAmounts(l).af, 0),
+          net_exempt: viewerLines.reduce((s, l) => s + calcLineAmounts(l).ex, 0),
+          tax_total: viewerLines.reduce((s, l) => s + calcLineAmounts(l).iva, 0),
+          grand_total: viewerLines.reduce((s, l) => s + calcLineAmounts(l).total, 0),
+          paid: viewerPayments.reduce((s, p) => s + toNum(p.amount), 0),
+          balance:
+            viewerLines.reduce((s, l) => s + calcLineAmounts(l).total, 0) -
+            viewerPayments.reduce((s, p) => s + toNum(p.amount), 0),
+        }}
+        badgeTypeClass={
+          viewerHeader.doc_type === "INVOICE"
+            ? "bg-sky-100 text-sky-800"
+            : viewerHeader.doc_type === "DEBIT_NOTE"
+            ? "bg-fuchsia-100 text-fuchsia-800"
+            : "bg-amber-100 text-amber-900"
+        }
+        badgeStatusClass={
+          viewerHeader.status === "VIGENTE"
+            ? "bg-emerald-100 text-emerald-800"
+            : viewerHeader.status === "CANCELADO"
+            ? "bg-rose-100 text-rose-800"
+            : "bg-slate-100 text-slate-800"
+        }
+        formatNumber={formatNumber}
+        calcLineAmounts={(l) => {
+          const { ex, af, iva, total, total_display } = calcLineAmounts(l);
+          return { ex, af, iva, total, total_display };
+        }}
+        ellipsis={ellipsis}
+        folioLabel={folioLabel}
+        saveDraftMVP={async () => {}}
+        markAsVigenteMVP={async () => {}}
+        deleteDraftMVP={async () => {}}
+        cancelDocMVP={async () => {}}
+      />
+
       <OriginDocSearchModal
         open={originSearchOpen}
         onClose={() => setOriginSearchOpen(false)}
@@ -4061,7 +4733,7 @@ export default function Page() {
             issue_date_from: "",
             issue_date_to: "",
             only_open_balance: true,
-            only_vigente: true,
+            only_vigente: false,
           });
           setOriginResults([]);
           setOriginOffset(0);
@@ -4069,7 +4741,7 @@ export default function Page() {
         }}
         onPick={pickOrigin}
         onViewDoc={(doc) => {
-          console.log("Ver documento:", doc);
+          void openViewDoc(doc);
         }}
         headerCell={headerCell}
         headerSub={headerSub}

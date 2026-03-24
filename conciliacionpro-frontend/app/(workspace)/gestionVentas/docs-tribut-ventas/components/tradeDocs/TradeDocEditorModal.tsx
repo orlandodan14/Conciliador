@@ -199,6 +199,7 @@ function EditorShellModal({
   onClose,
   footer,
   widthClass = "w-[min(1200px,96vw)]",
+  zIndexClass = "z-50",
   headerClassName,
   glowAClassName,
   glowBClassName,
@@ -210,6 +211,7 @@ function EditorShellModal({
   onClose: () => void;
   footer?: React.ReactNode;
   widthClass?: string;
+  zIndexClass?: string;
   headerClassName: string;
   glowAClassName: string;
   glowBClassName: string;
@@ -218,7 +220,7 @@ function EditorShellModal({
   
 
   return (
-    <div className="fixed inset-0 z-50">
+    <div className={cls("fixed inset-0", zIndexClass)}>
       <div className="absolute inset-0 bg-black/45" onClick={onClose} />
       <div className={cls("absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2", widthClass)}>
         <div className="flex h-[min(84vh,780px)] flex-col overflow-hidden rounded-[22px] bg-white shadow-xl ring-1 ring-black/5">
@@ -255,6 +257,7 @@ export function TradeDocEditorModal(props: {
   // visibilidad
   open: boolean;
   onClose: () => void;
+  mode?: "edit" | "view";
 
   // header visual (mantener tu theme)
   theme: {
@@ -270,6 +273,7 @@ export function TradeDocEditorModal(props: {
   title: string;
   subtitle?: string;
   widthClass?: string;
+  zIndexClass?: string;
 
   // permisos / settings
   canEdit: boolean;
@@ -362,10 +366,12 @@ export function TradeDocEditorModal(props: {
   const {
     open,
     onClose,
+    mode = "edit",
     theme,
     title,
-    subtitle = "Ventas • Editor",
+    subtitle = mode === "view" ? "Ventas • Consulta" : "Ventas • Editor",
     widthClass = "w-[min(1200px,96vw)]",
+    zIndexClass = "z-50",
     canEdit,
     showCancelButton,
     docId,
@@ -512,7 +518,7 @@ export function TradeDocEditorModal(props: {
     setHeader((h) => ({ ...h, ...patch }));
   }
 
-  
+  const isViewMode = mode === "view";  
 
   function focusGridCell(grid: "lineas" | "asiento", row: number, col: number) {
     if (row < 0 || col < 0) return;
@@ -780,91 +786,120 @@ export function TradeDocEditorModal(props: {
       subtitle={subtitle}
       onClose={onClose}
       widthClass={widthClass}
+      zIndexClass={zIndexClass}
       headerClassName={theme.header}
       glowAClassName={theme.glowA}
       glowBClassName={theme.glowB}
       footer={
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap gap-2 text-xs text-slate-700">
-            <span className={cls("inline-flex items-center rounded-full px-2 py-0.5", badgeTypeClass)}>
-              Tipo: <b className="ml-1">{header.doc_type}</b>
-            </span>
-            <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5">
-              Cód: <b className="ml-1">{header.fiscal_doc_code || "—"}</b>
-            </span>
-            <span className={cls("inline-flex items-center rounded-full px-2 py-0.5", badgeStatusClass)}>
-              Estatus: <b className="ml-1">{header.status}</b>
-            </span>
-            <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5">
-              Afecto: <b className="ml-1">{formatNumber(totals.net_taxable, moneyDecimals)}</b>
-              <span className="mx-2 text-slate-300">|</span>
-              Exento: <b className="ml-1">{formatNumber(totals.net_exempt, moneyDecimals)}</b>
-              <span className="mx-2 text-slate-300">|</span>
-              IVA: <b className="ml-1">{formatNumber(totals.tax_total, moneyDecimals)}</b>
-              <span className="mx-2 text-slate-300">|</span>
-              Total: <b className="ml-1">{formatNumber(totals.grand_total, moneyDecimals)}</b>
-            </span>
-          </div>
+        isViewMode ? (
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap gap-2 text-xs text-slate-700">
+              <span className="inline-flex items-center rounded-full bg-sky-100 px-2 py-0.5 font-semibold text-sky-800">
+                Solo visualización
+              </span>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <button className={theme.btnSoft} onClick={onClose} type="button">
-              Cerrar
-            </button>
+              <span className={cls("inline-flex items-center rounded-full px-2 py-0.5", badgeTypeClass)}>
+                Tipo: <b className="ml-1">{header.doc_type}</b>
+              </span>
 
-            <button
-              className={cls(
-                theme.btnSoft,
-                (!canEdit || seatValidation.hasErrors) && "opacity-60 cursor-not-allowed"
-              )}
-              disabled={!canEdit || seatValidation.hasErrors}
-              onClick={saveDraftMVP}
-              type="button"
-              title={
-                seatValidation.hasErrors
-                  ? "Corrige las validaciones del asiento antes de guardar."
-                  : "Guardar borrador"
-              }
-            >
-              Guardar borrador
-            </button>
+              <span className={cls("inline-flex items-center rounded-full px-2 py-0.5", badgeStatusClass)}>
+                Estatus: <b className="ml-1">{header.status}</b>
+              </span>
+            </div>
 
-            <button
-              className={cls(
-                theme.btnPrimary,
-                (!canEdit || seatValidation.hasErrors) && "opacity-60 cursor-not-allowed"
-              )}
-              disabled={!canEdit || seatValidation.hasErrors}
-              onClick={handleRegisterDirect}
-              type="button"
-              title={
-                seatValidation.hasErrors
-                  ? "Corrige las validaciones del asiento antes de registrar."
-                  : "Registrar y contabilizar"
-              }
-            >
-              Registrar
-            </button>
-
-            <button
-              className={cls(
-                "rounded-lg bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-700",
-                (!canEdit || !docId) && "opacity-60 cursor-not-allowed"
-              )}
-              disabled={!canEdit || !docId}
-              onClick={deleteDraftMVP}
-              type="button"
-              title={!docId ? "Este documento aún no existe en la base de datos." : "Eliminar borrador"}
-            >
-              Eliminar
-            </button>
-
-            {showCancelButton ? (
-              <button className={theme.btnSoft} onClick={cancelDocMVP} type="button">
-                Cancelar
+            <div className="flex flex-wrap items-center gap-2">
+              <button className={theme.btnSoft} onClick={onClose} type="button">
+                Cerrar
               </button>
-            ) : null}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap gap-2 text-xs text-slate-700">
+              <span className={cls("inline-flex items-center rounded-full px-2 py-0.5", badgeTypeClass)}>
+                Tipo: <b className="ml-1">{header.doc_type}</b>
+              </span>
+              <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5">
+                Cód: <b className="ml-1">{header.fiscal_doc_code || "—"}</b>
+              </span>
+              <span className={cls("inline-flex items-center rounded-full px-2 py-0.5", badgeStatusClass)}>
+                Estatus: <b className="ml-1">{header.status}</b>
+              </span>
+              <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5">
+                Afecto: <b className="ml-1">{formatNumber(totals.net_taxable, moneyDecimals)}</b>
+                <span className="mx-2 text-slate-300">|</span>
+                Exento: <b className="ml-1">{formatNumber(totals.net_exempt, moneyDecimals)}</b>
+                <span className="mx-2 text-slate-300">|</span>
+                IVA: <b className="ml-1">{formatNumber(totals.tax_total, moneyDecimals)}</b>
+                <span className="mx-2 text-slate-300">|</span>
+                Total: <b className="ml-1">{formatNumber(totals.grand_total, moneyDecimals)}</b>
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button className={theme.btnSoft} onClick={onClose} type="button">
+                Cerrar
+              </button>
+
+              <button
+                className={cls(
+                  theme.btnSoft,
+                  (!canEdit || seatValidation.hasErrors) && "opacity-60 cursor-not-allowed"
+                )}
+                disabled={!canEdit || seatValidation.hasErrors}
+                onClick={saveDraftMVP}
+                type="button"
+                title={
+                  seatValidation.hasErrors
+                    ? "Corrige las validaciones del asiento antes de guardar."
+                    : "Guardar borrador"
+                }
+              >
+                Guardar borrador
+              </button>
+
+              <button
+                className={cls(
+                  theme.btnPrimary,
+                  (!canEdit || seatValidation.hasErrors) && "opacity-60 cursor-not-allowed"
+                )}
+                disabled={!canEdit || seatValidation.hasErrors}
+                onClick={handleRegisterDirect}
+                type="button"
+                title={
+                  seatValidation.hasErrors
+                    ? "Corrige las validaciones del asiento antes de registrar."
+                    : "Registrar y contabilizar"
+                }
+              >
+                Registrar
+              </button>
+
+              <button
+                className={cls(
+                  "rounded-lg bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-700",
+                  (!canEdit || !docId) && "opacity-60 cursor-not-allowed"
+                )}
+                disabled={!canEdit || !docId}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  void deleteDraftMVP();
+                }}
+                type="button"
+                title={!docId ? "Este documento aún no existe en la base de datos." : "Eliminar borrador"}
+              >
+                Eliminar
+              </button>
+
+              {showCancelButton ? (
+                <button className={theme.btnSoft} onClick={cancelDocMVP} type="button">
+                  Cancelar
+                </button>
+              ) : null}
+            </div>
+          </div>
+        )
       }
     >
 
