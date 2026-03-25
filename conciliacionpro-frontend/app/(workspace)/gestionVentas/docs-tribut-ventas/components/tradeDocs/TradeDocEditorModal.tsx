@@ -357,11 +357,14 @@ export function TradeDocEditorModal(props: {
   ellipsis: (s: string, max: number) => string;
   folioLabel: (series?: string | null, number?: string | null) => string;
 
-    // acciones
-    saveDraftMVP: () => Promise<void>;
-    markAsVigenteMVP: () => Promise<void>;
-    deleteDraftMVP: () => Promise<void>;
-    cancelDocMVP: () => Promise<void>;
+      // mensajes
+      messages: Array<{ level: "error" | "warn"; text: string }>;
+
+      // acciones
+      saveDraftMVP: () => Promise<void>;
+      markAsVigenteMVP: () => Promise<void>;
+      deleteDraftMVP: () => Promise<void>;
+      cancelDocMVP: () => Promise<void>;
 }) {
   const {
     open,
@@ -424,6 +427,7 @@ export function TradeDocEditorModal(props: {
     calcLineAmounts,
     ellipsis,
     folioLabel,
+    messages,
     saveDraftMVP,
     markAsVigenteMVP,
     deleteDraftMVP,
@@ -758,12 +762,6 @@ export function TradeDocEditorModal(props: {
 
     async function handleRegisterDirect() {
       if (!canEdit || seatValidation.hasErrors) return;
-
-      const ok = window.confirm(
-        "¿Registrar este documento ahora? Se contabilizará directamente y dejará de estar en borrador."
-      );
-      if (!ok) return;
-
       await markAsVigenteMVP();
     }
 
@@ -902,6 +900,26 @@ export function TradeDocEditorModal(props: {
         )
       }
     >
+            {messages.length ? (
+              <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-3">
+                <div className="space-y-2">
+                  {messages.slice(0, 4).map((m, i) => (
+                    <div
+                      key={i}
+                      className={cls(
+                        "rounded-xl border px-3 py-2 text-sm",
+                        m.level === "error"
+                          ? "border-rose-200 bg-rose-50 text-rose-900"
+                          : "border-amber-200 bg-amber-50 text-amber-900"
+                      )}
+                    >
+                      {m.text}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
 
             <datalist id={journalAccountListId}>
               {accounts.map((a) => (

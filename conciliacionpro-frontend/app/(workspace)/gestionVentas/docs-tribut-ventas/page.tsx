@@ -58,6 +58,109 @@ function folioLabel(series?: string | null, number?: string | null) {
   return s ? `${s}-${n}` : n;
 }
 
+function normalizeFolioPart(value: string | null | undefined) {
+  return String(value ?? "").trim().toUpperCase();
+}
+
+function hasFiscalFolioData(h: DocHeader) {
+  return (
+    String(h.fiscal_doc_code || "").trim() !== "" &&
+    String(h.number || "").trim() !== ""
+  );
+}
+
+async function findDuplicateFiscalFolio(args: {
+  companyId: string;
+  fiscalDocCode: string;
+  series: string;
+  number: string;
+  excludeDocId?: string | null;
+}) {
+  const fiscalDocCode = normalizeFolioPart(args.fiscalDocCode);
+  const series = normalizeFolioPart(args.series);
+  const number = normalizeFolioPart(args.number);
+
+  if (!fiscalDocCode || !number) return null;
+
+  let query = supabase
+    .from("trade_docs")
+    .select("id,status,doc_type,fiscal_doc_code,series,number")
+    .eq("company_id", args.companyId)
+    .eq("fiscal_doc_code", fiscalDocCode)
+    .eq("number", number)
+    .neq("status", "CANCELADO")
+    .limit(1);
+
+  if (series) {
+    query = query.eq("series", series);
+  } else {
+    query = query.is("series", null);
+  }
+
+  if (args.excludeDocId) {
+    query = query.neq("id", args.excludeDocId);
+  }
+
+  const { data, error } = await query.maybeSingle();
+  if (error) throw error;
+  return data ?? null;
+}
+
+async function assertUniqueFiscalFolio(args: {
+  companyId: string;
+  header: DocHeader;
+  excludeDocId?: string | null;
+}) {
+  if (!hasFiscalFolioData(args.header)) return;
+
+  const duplicate = await findDuplicateFiscalFolio({
+    companyId: args.companyId,
+    fiscalDocCode: args.header.fiscal_doc_code,
+    series: args.header.series,
+    number: args.header.number,
+    excludeDocId: args.excludeDocId ?? null,
+  });
+
+  if (duplicate) {
+    const dupFolio = folioLabel(
+      (duplicate as any).series ?? null,
+      (duplicate as any).number ?? null
+    );
+
+    throw new Error(
+      `No se puede guardar ni registrar este documento porque el folio fiscal ${String((duplicate as any).fiscal_doc_code || "").trim()} ${dupFolio} ya fue usado en otro documento.`
+    );
+  }
+}
+
+function getJournalDocTypeLabel(docType: DocType) {
+  if (docType === "DEBIT_NOTE") return "NOTA DE DÉBITO (INGRESO)";
+  if (docType === "CREDIT_NOTE") return "NOTA DE CRÉDITO (REBAJA)";
+  return "DOCUMENTO (INGRESO)";
+}
+
+function isReverseNoteDocType(docType: DocType) {
+  return docType === "CREDIT_NOTE" || docType === "DEBIT_NOTE";
+}
+
+function buildJournalDescriptionFromHeader(h: DocHeader) {
+  const typeLabel = getJournalDocTypeLabel(h.doc_type);
+  const ownFolio = folioLabel(h.series, h.number);
+
+  const parts: string[] = [typeLabel];
+
+  if (ownFolio !== "—") {
+    parts.push(`Folio ${ownFolio}`);
+  }
+
+  const isNote = h.doc_type === "DEBIT_NOTE" || h.doc_type === "CREDIT_NOTE";
+  if (isNote && String(h.origin_label || "").trim()) {
+    parts.push(`Afecta ${String(h.origin_label).trim()}`);
+  }
+
+  return parts.join(" - ");
+}
+
 function ellipsis(s: string, max: number) {
   const t = String(s ?? "");
   if (t.length <= max) return t;
@@ -204,7 +307,9 @@ async function upsertDraftJournalEntry(args: {
 
   const accountingPeriodId = await getCurrentAccountingPeriodId(companyId, entryDate);
   if (!accountingPeriodId) {
-    throw new Error(`No existe período contable para la fecha ${entryDate}.`);
+    throw new Error(
+      `La fecha ${entryDate} no pertenece a un período contable ABIERTO o el período está bloqueado.`
+    );
   }
 
   const payload = {
@@ -375,7 +480,18 @@ async function rollbackDraftArtifacts(args: {
   }
 }
 
-async function getCurrentAccountingPeriodId(companyId: string, issueDate: string): Promise<string | null> {
+function normalizePeriodStatus(value: any): string {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toUpperCase();
+}
+
+async function getCurrentAccountingPeriodId(
+  companyId: string,
+  issueDate: string
+): Promise<string | null> {
   const { data, error } = await supabase
     .from("accounting_periods")
     .select("id,start_date,end_date,status,is_current")
@@ -387,7 +503,22 @@ async function getCurrentAccountingPeriodId(companyId: string, issueDate: string
     .maybeSingle();
 
   if (error) throw error;
-  return data?.id ?? null;
+  if (!data) return null;
+
+  const status = normalizePeriodStatus((data as any).status);
+
+  const isOpen =
+    status === "ABIERTO" ||
+    status === "OPEN";
+
+  const isBlocked =
+    status === "BLOQUEADO" ||
+    status === "BLOCKED";
+
+  if (isBlocked) return null;
+  if (!isOpen) return null;
+
+  return (data as any).id ?? null;
 }
 
 async function getAuthUserId(): Promise<string | null> {
@@ -887,6 +1018,7 @@ export default function Page() {
   const [journalAutoMode, setJournalAutoMode] = useState(true);
 
   const [messages, setMessages] = useState<Array<{ level: "error" | "warn"; text: string }>>([]);
+  const [editorMessages, setEditorMessages] = useState<Array<{ level: "error" | "warn"; text: string }>>([]);
 
   const [accounts, setAccounts] = useState<AccountNodeLite[]>([]);
   const [accByCode, setAccByCode] = useState<Record<string, AccountNodeLite>>({});
@@ -962,13 +1094,44 @@ export default function Page() {
     else selectAllDrafts();
   }
 
+  function finishBulkRegisterProgress() {
+    setBulkRegisterProgress(100);
+    setBulkRegisterProgressDone(true);
+
+    window.setTimeout(() => {
+      setBulkRegisterProgressVisible(false);
+      setBulkRegisterProgressDone(false);
+      setBulkRegisterProgress(0);
+      setDraftSaving(false);
+      setDraftDeleting(false);
+      setProgressMode(null);
+    }, 1200);
+  }
+
+  function resetBulkRegisterProgressNow() {
+    setBulkRegisterProgressVisible(false);
+    setBulkRegisterProgressDone(false);
+    setBulkRegisterProgress(0);
+    setDraftSaving(false);
+    setDraftDeleting(false);
+    setProgressMode(null);
+  }
+
   // =========================
   // Carga masiva (Excel)
   // =========================
   const [importOpen, setImportOpen] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [bulkRegistering, setBulkRegistering] = useState(false);
   const [importPreview, setImportPreview] = useState<any[]>([]);
   const [importErrors, setImportErrors] = useState<string[]>([]);
+  const [draftSaving, setDraftSaving] = useState(false);
+  const [draftDeleting, setDraftDeleting] = useState(false);
+  const [progressMode, setProgressMode] = useState<"SAVE_DRAFT" | "REGISTER" | "DELETE_DRAFT" | null>(null);
+
+  const [bulkRegisterProgress, setBulkRegisterProgress] = useState(0);
+  const [bulkRegisterProgressVisible, setBulkRegisterProgressVisible] = useState(false);
+  const [bulkRegisterProgressDone, setBulkRegisterProgressDone] = useState(false);
 
   const headerCell =
     "text-left text-[12px] font-semibold text-slate-700 border border-slate-200 bg-slate-50/70 px-2 py-1 align-bottom";
@@ -1871,9 +2034,9 @@ export default function Page() {
 
 
   function buildJournalFromDoc(): { lines: JournalLine[]; error?: string } {
-    const glosaBase = header.fiscal_doc_code || "VENTA";
     const tol = 0.5;
-    const docGlosa = `${glosaBase} - ${folioLabel(header.series, header.number)}`.trim();
+    const docGlosa = buildJournalDescriptionFromHeader(header);
+    const isReverse = isReverseNoteDocType(header.doc_type);
 
     const usedDocLines = getUsedDocLines();
 
@@ -1902,8 +2065,8 @@ export default function Page() {
         line_no: payLines.length + 1,
         account_code: accountCode,
         description: docGlosa,
-        debit: String(amount),
-        credit: "",
+        debit: isReverse ? "" : String(amount),
+        credit: isReverse ? String(amount) : "",
 
         cost_center_id: null,
         business_line_id: null,
@@ -1947,8 +2110,8 @@ export default function Page() {
           line_no: next.length + 1,
           account_code: arAccount,
           description: docGlosa,
-          debit: String(diff),
-          credit: "",
+          debit: isReverse ? "" : String(diff),
+          credit: isReverse ? String(diff) : "",
 
           cost_center_id: null,
           business_line_id: null,
@@ -1975,8 +2138,8 @@ export default function Page() {
           line_no: next.length + 1,
           account_code: taxAccount,
           description: docGlosa,
-          debit: "",
-          credit: String(totals.tax_total),
+          debit: isReverse ? String(totals.tax_total) : "",
+          credit: isReverse ? "" : String(totals.tax_total),
 
           cost_center_id: null,
           business_line_id: null,
@@ -2064,8 +2227,8 @@ export default function Page() {
           line_no: next.length + 1,
           account_code: bucket.account_code,
           description: bucket.description,
-          debit: "",
-          credit: String(bucket.amount),
+          debit: isReverse ? String(bucket.amount) : "",
+          credit: isReverse ? "" : String(bucket.amount),
 
           cost_center_id: null,
           business_line_id: bucket.business_line_id,
@@ -2266,22 +2429,16 @@ export default function Page() {
     const issueDate = doc.issue_date || todayISO();
     const accountingPeriodId = await getCurrentAccountingPeriodId(companyId, issueDate);
     if (!accountingPeriodId) {
-      throw new Error(`No existe período contable para la fecha ${doc.issue_date}.`);
+      throw new Error(
+        `La fecha ${issueDate} no pertenece a un período contable ABIERTO o el período está bloqueado.`
+      );
     }
 
-    const { error: entryUpdateError } = await supabase
-      .from("journal_entries")
-      .update({
-        accounting_period_id: accountingPeriodId,
-        status: "POSTED",
-        posted_at: new Date().toISOString(),
-        posted_by: userId,
-      })
-      .eq("company_id", companyId)
-      .eq("id", doc.journal_entry_id)
-      .eq("status", "DRAFT");
+    const { error: postError } = await supabase.rpc("post_journal_entry", {
+      _entry_id: doc.journal_entry_id,
+    });
 
-    if (entryUpdateError) throw entryUpdateError;
+    if (postError) throw postError;
 
     const { error: updateDocError } = await supabase
       .from("trade_docs")
@@ -2295,6 +2452,33 @@ export default function Page() {
       .eq("status", "BORRADOR");
 
     if (updateDocError) throw updateDocError;
+  }
+
+  async function registerTradeDocsViaBulk(tradeDocIds: string[]): Promise<{
+    okCount: number;
+    errorCount: number;
+    errors: Array<{ trade_doc_id?: string; message?: string }>;
+  }> {
+    if (!companyId) throw new Error("Falta companyId.");
+    if (!canEdit) throw new Error("No tienes permisos para registrar.");
+
+    const cleanIds = Array.from(new Set((tradeDocIds || []).filter(Boolean)));
+    if (cleanIds.length === 0) {
+      return { okCount: 0, errorCount: 0, errors: [] };
+    }
+
+    const { data, error } = await supabase.rpc("bulk_register_trade_docs", {
+      _company_id: companyId,
+      _trade_doc_ids: cleanIds,
+    });
+
+    if (error) throw error;
+
+    return {
+      okCount: Number((data as any)?.ok_count || 0),
+      errorCount: Number((data as any)?.error_count || 0),
+      errors: Array.isArray((data as any)?.errors) ? (data as any).errors : [],
+    };
   }
   
   function clearForm() {
@@ -2342,7 +2526,7 @@ export default function Page() {
     setPayments([]);
     setJournalLines(Array.from({ length: 4 }, (_, i) => makeJournalLine(i + 1)));
 
-    setMessages([]);
+    clearScopedMessages("all");
     setOriginSearchOpen(false);
     setOriginResults([]);
     setOriginLoading(false);
@@ -2361,6 +2545,7 @@ export default function Page() {
 
   function openNewDoc() {
     clearForm();
+    clearScopedMessages("editor");
     setEditorTab("CABECERA");
     setEditorOpen(true);
   }
@@ -2368,6 +2553,23 @@ export default function Page() {
   function closeEditor() {
     setEditorOpen(false);
     setOriginSearchOpen(false);
+    clearScopedMessages("editor");
+  }
+
+  function setScopedMessages(
+    msgs: Array<{ level: "error" | "warn"; text: string }>,
+    scope: "page" | "editor" = "page"
+  ) {
+    if (scope === "editor") {
+      setEditorMessages(msgs);
+    } else {
+      setMessages(msgs);
+    }
+  }
+
+  function clearScopedMessages(scope: "page" | "editor" | "all" = "all") {
+    if (scope === "editor" || scope === "all") setEditorMessages([]);
+    if (scope === "page" || scope === "all") setMessages([]);
   }
 
   /**
@@ -2412,7 +2614,7 @@ export default function Page() {
           counterparty_identifier_snapshot
         `)
         .eq("company_id", companyId)
-        .eq("doc_type", "INVOICE")
+        .in("doc_type", ["INVOICE", "CREDIT_NOTE", "DEBIT_NOTE"])
         .order("issue_date", { ascending: false })
         .order("created_at", { ascending: false })
         .range(from, to);
@@ -2502,49 +2704,76 @@ export default function Page() {
   }
 
   async function loadOriginLines(originTradeDocId: string): Promise<DocLine[]> {
-  const { data, error } = await supabase
-    .from("trade_doc_lines")
-    .select("line_no,item_id,sku,description,qty,unit_price,tax_kind,exempt_amount,taxable_amount,tax_rate,tax_amount,line_total")
-    .eq("company_id", companyId)
-    .eq("trade_doc_id", originTradeDocId)
-    .order("line_no", { ascending: true });
+    const { data, error } = await supabase
+      .from("trade_doc_lines")
+      .select("line_no,item_id,sku,description,qty,unit_price,tax_kind,exempt_amount,taxable_amount,tax_rate,tax_amount,line_total")
+      .eq("company_id", companyId)
+      .eq("trade_doc_id", originTradeDocId)
+      .order("line_no", { ascending: true });
 
-  if (error) throw error;
+    if (error) throw error;
 
-  const parsed: DocLine[] = (((data as any[]) || []).map((r: any) => {
-    const taxKind = String(r.tax_kind || "").toUpperCase();
-    const isTaxable = taxKind === "EXENTO" ? false : true;
+    const parsed: DocLine[] = (((data as any[]) || []).map((r: any) => {
+      const taxKind = String(r.tax_kind || "").toUpperCase();
+      const isTaxable = taxKind === "EXENTO" ? false : true;
 
-    const exemptAmount = Number(r.exempt_amount || 0);
-    const taxableAmount = Number(r.taxable_amount || 0);
-    const taxAmount = Number(r.tax_amount || 0);
-    const lineTotal = Number(r.line_total || 0);
+      const exemptAmount = Number(r.exempt_amount || 0);
+      const taxableAmount = Number(r.taxable_amount || 0);
+      const taxAmount = Number(r.tax_amount || 0);
+      const lineTotal = Number(r.line_total || 0);
 
-    return {
-      line_no: Number(r.line_no) || 1,
-      item_id: r.item_id || null,
-      sku: r.sku || "",
-      description: r.description || "",
-      qty: r.qty != null ? String(r.qty) : "1",
-      unit_price: r.unit_price != null ? String(r.unit_price) : "",
-      is_taxable: isTaxable,
-      tax_rate: r.tax_rate != null ? String(r.tax_rate) : (defaultTaxRate || "19"),
-      ex_override: exemptAmount > 0 ? String(exemptAmount) : "",
-      af_override: taxableAmount > 0 ? String(taxableAmount) : "",
-      iva_override: taxAmount > 0 ? String(taxAmount) : "",
-      total_override: lineTotal > 0 ? String(lineTotal) : "",
-    };
-  })) as DocLine[];
+      return {
+        line_no: Number(r.line_no) || 1,
+        item_id: r.item_id || null,
+        sku: r.sku || "",
+        description: r.description || "",
+        qty: r.qty != null ? String(r.qty) : "1",
+        unit_price: r.unit_price != null ? String(r.unit_price) : "",
+        is_taxable: isTaxable,
+        tax_rate: r.tax_rate != null ? String(r.tax_rate) : (defaultTaxRate || "19"),
+        ex_override: exemptAmount > 0 ? String(exemptAmount) : "",
+        af_override: taxableAmount > 0 ? String(taxableAmount) : "",
+        iva_override: taxAmount > 0 ? String(taxAmount) : "",
+        total_override: lineTotal > 0 ? String(lineTotal) : "",
+      };
+    })) as DocLine[];
 
-  return parsed.length >= 4
-    ? renumber(parsed)
-    : renumber([
-        ...parsed,
-        ...Array.from({ length: Math.max(4 - parsed.length, 0) }, (_, i) =>
-          makeDocLine(parsed.length + i + 1)
-        ),
-      ]);
-}
+    return parsed.length >= 4
+      ? renumber(parsed)
+      : renumber([
+          ...parsed,
+          ...Array.from({ length: Math.max(4 - parsed.length, 0) }, (_, i) =>
+            makeDocLine(parsed.length + i + 1)
+          ),
+        ]);
+  }
+
+  function buildEditableLinesFromOriginForNote(originLines: DocLine[]): DocLine[] {
+    const cleaned = originLines.map((l, idx) => ({
+      ...makeDocLine(idx + 1),
+      line_no: idx + 1,
+      item_id: l.item_id || null,
+      sku: l.sku || "",
+      description: l.description || "",
+      qty: "1",
+      unit_price: "",
+      is_taxable: Boolean(l.is_taxable),
+      tax_rate: String(l.tax_rate || defaultTaxRate || "19"),
+      ex_override: "",
+      af_override: "",
+      iva_override: "",
+      total_override: "",
+    }));
+
+    return cleaned.length >= 4
+      ? renumber(cleaned)
+      : renumber([
+          ...cleaned,
+          ...Array.from({ length: Math.max(4 - cleaned.length, 0) }, (_, i) =>
+            makeDocLine(cleaned.length + i + 1)
+          ),
+        ]);
+  }
 
 async function loadOriginPayments(originTradeDocId: string): Promise<PaymentRow[]> {
   const { data: payData, error: payError } = await supabase
@@ -2605,6 +2834,18 @@ async function loadOriginPayments(originTradeDocId: string): Promise<PaymentRow[
   }
 
   return parsedPayments;
+}
+
+function buildEditablePaymentsFromOriginForNote(originPayments: PaymentRow[]): PaymentRow[] {
+  return originPayments.map((p) => ({
+    ...makePaymentRow(),
+    method: p.method,
+    amount: "",
+    card_kind: p.card_kind || "",
+    card_last4: p.card_last4 || "",
+    auth_code: p.auth_code || "",
+    reference: p.reference || "",
+  }));
 }
 
 async function loadOriginJournalReversed(originTradeDocId: string): Promise<JournalLine[]> {
@@ -2682,11 +2923,23 @@ async function loadOriginJournalReversed(originTradeDocId: string): Promise<Jour
 }
 
 async function hydrateTabsFromOrigin(originTradeDocId: string) {
-  const [originLines, originPayments, originJournalReversed] = await Promise.all([
+  const [originLines, originPayments] = await Promise.all([
     loadOriginLines(originTradeDocId),
     loadOriginPayments(originTradeDocId),
-    loadOriginJournalReversed(originTradeDocId),
   ]);
+
+  if (isReverseNoteDocType(header.doc_type)) {
+    const editableLines = buildEditableLinesFromOriginForNote(originLines);
+    const editablePayments = buildEditablePaymentsFromOriginForNote(originPayments);
+
+    setLines(editableLines);
+    setPayments(editablePayments);
+    setJournalAutoMode(true);
+    setJournalLines(Array.from({ length: 4 }, (_, i) => makeJournalLine(i + 1)));
+    return;
+  }
+
+  const originJournalReversed = await loadOriginJournalReversed(originTradeDocId);
 
   setLines(originLines);
   setPayments(originPayments);
@@ -2796,10 +3049,32 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companyId]);
 
+  useEffect(() => {
+    if (!bulkRegistering && !draftSaving && !draftDeleting) return;
+
+    setBulkRegisterProgressVisible(true);
+    setBulkRegisterProgressDone(false);
+    setBulkRegisterProgress(8);
+
+    const timer = window.setInterval(() => {
+      setBulkRegisterProgress((prev) => {
+        if (prev >= 92) return prev;
+        if (prev < 35) return prev + 8;
+        if (prev < 60) return prev + 5;
+        if (prev < 80) return prev + 3;
+        return prev + 1;
+      });
+    }, 400);
+
+    return () => window.clearInterval(timer);
+  }, [bulkRegistering, draftSaving, draftDeleting]);
   /**
    * Save / status
    */
-  async function saveDraftInternal(closeAfterSave = true): Promise<string | null> {
+  async function saveDraftInternal(
+    closeAfterSave = true,
+    messageScope: "page" | "editor" = "page"
+  ): Promise<string | null> {
     if (!companyId || !canEdit) return null;
 
     let savedIdForRollback: string | null = null;
@@ -2808,7 +3083,18 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
     let previousJournalLines: any[] = [];
 
     try {
-      setMessages([]);
+      clearScopedMessages(messageScope);
+
+      setProgressMode("SAVE_DRAFT");
+      setDraftSaving(true);   
+
+      if (hasFiscalFolioData(header)) {
+        await assertUniqueFiscalFolio({
+          companyId,
+          header,
+          excludeDocId: docId,
+        });
+      }
 
       const userId = await getAuthUserId();
 
@@ -2994,7 +3280,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
         companyId,
         docId: savedId,
         entryDate: header.issue_date,
-        description: `${header.fiscal_doc_code || "VENTA"} ${folioLabel(header.series, header.number)}`.trim(),
+        description: buildJournalDescriptionFromHeader(header),
         reference: header.reference || null,
         currencyCode: header.currency_code || baseCurrency,
         userId,
@@ -3030,6 +3316,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
 
       const journalLineRows = result.lines.map((rawLine, idx) => {
         const l = normalizeLineDimensionsByPolicy(rawLine);
+        const defaultJournalDescription = buildJournalDescriptionFromHeader(header);
 
         const acc = accByCode[String(l.account_code).trim()];
         if (!acc?.id) {
@@ -3051,7 +3338,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
           journal_entry_id: draftJournalEntryId,
           line_no: idx + 1,
           account_node_id: acc.id,
-          line_description: l.description || null,
+          line_description: String(l.description || "").trim() || defaultJournalDescription,
           line_reference: header.reference || null,
           debit: toNum(l.debit),
           credit: toNum(l.credit),
@@ -3141,8 +3428,10 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
         await deletePaymentsByIds(companyId, savedId, oldPaymentIds);
       }
 
-      setMessages([{ level: "warn", text: "Borrador guardado." }]);
+      setScopedMessages([{ level: "warn", text: "Borrador guardado." }], messageScope);
       await loadDrafts();
+
+      finishBulkRegisterProgress();
 
       if (closeAfterSave) {
         closeEditor();
@@ -3181,19 +3470,24 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
         } catch {}
       }
 
-      setMessages([
-        {
-          level: "error",
-          text: e?.message || "No se pudo guardar el borrador.",
-        },
-      ]);
+      resetBulkRegisterProgressNow();
+
+      setScopedMessages(
+        [
+          {
+            level: "error",
+            text: e?.message || "No se pudo guardar el borrador.",
+          },
+        ],
+        messageScope
+      );
 
       return null;
     }
   }
   
   async function saveDraftMVP() {
-    await saveDraftInternal(true);
+    await saveDraftInternal(true, "editor");
   }
 
   async function markAsVigenteMVP() {
@@ -3204,38 +3498,83 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
     );
     if (!ok) return;
 
+    let closedEditorForRegister = false;
+
     try {
-      setMessages([]);
+      clearScopedMessages("editor");
+      setProgressMode("REGISTER");
+      setBulkRegistering(true);
 
       let finalDocId = docId;
 
       if (!finalDocId) {
-        finalDocId = await saveDraftInternal(false);
+        finalDocId = await saveDraftInternal(false, "editor");
       }
 
+      // si no se pudo guardar, no cierres el modal y limpia la barra inmediatamente
       if (!finalDocId) {
-        throw new Error("No se pudo guardar el borrador antes de registrar.");
+        resetBulkRegisterProgressNow();
+        return;
       }
 
-      await registerDraftById(finalDocId);
+      if (hasFiscalFolioData(header)) {
+        await assertUniqueFiscalFolio({
+          companyId,
+          header,
+          excludeDocId: finalDocId,
+        });
+      }
 
-      setHeader((h) => ({
-        ...h,
-        status: "VIGENTE",
-      }));
+      closeEditor();
+      closedEditorForRegister = true;
 
-      setMessages([
-        { level: "warn", text: "Documento registrado (VIGENTE) y contabilizado correctamente." },
-      ]);
+      const result = await registerTradeDocsViaBulk([finalDocId]);
 
       await loadDrafts();
       clearSelection();
-      closeEditor();
       clearForm();
-    } catch (e: any) {
+
+      finishBulkRegisterProgress();
+
+      if (result.errorCount > 0) {
+        const firstError =
+          result.errors?.[0]?.message || "No se pudo registrar el documento.";
+        setMessages([{ level: "error", text: firstError }]);
+        return;
+      }
+
       setMessages([
-        { level: "error", text: e?.message || "No se pudo registrar el documento." },
+        {
+          level: "warn",
+          text: "Documento registrado (VIGENTE) y contabilizado correctamente.",
+        },
       ]);
+    } catch (e: any) {
+      // si el modal sigue abierto, mostramos error ahí y ocultamos la barra altiro
+      if (!closedEditorForRegister) {
+        resetBulkRegisterProgressNow();
+        setScopedMessages(
+          [
+            {
+              level: "error",
+              text: e?.message || "No se pudo registrar el documento.",
+            },
+          ],
+          "editor"
+        );
+      } else {
+        finishBulkRegisterProgress();
+        setMessages([
+          {
+            level: "error",
+            text: e?.message || "No se pudo registrar el documento.",
+          },
+        ]);
+      }
+
+      await loadDrafts();
+    } finally {
+      setBulkRegistering(false);
     }
   }
 
@@ -3243,25 +3582,16 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
     if (!docId) return;
     if (!companyId || !canEdit) return;
 
-    setMessages([]);
-
     const ok = window.confirm("¿Eliminar este borrador? No se puede deshacer.");
     if (!ok) return;
 
-    try {
-      await deleteDraftInternal(docId);
-
-      setMessages([{ level: "warn", text: "Borrador eliminado." }]);
-
-      clearForm();
-      closeEditor();
-      await loadDrafts();
-    } catch (e: any) {
-      setMessages([
-        { level: "error", text: e?.message || "No se pudo eliminar el borrador." },
-      ]);
-      await loadDrafts();
-    }
+    await deleteDraftsWithProgress({
+      ids: [docId],
+      messageScope: "editor",
+      closeEditorOnSuccess: true,
+      clearSelectionOnSuccess: true,
+      successText: "Borrador eliminado.",
+    });
   }
 
   async function cancelDocMVP() {
@@ -3707,6 +4037,64 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
     }
   }
 
+  async function deleteDraftsWithProgress(args: {
+    ids: string[];
+    messageScope?: "page" | "editor";
+    closeEditorOnSuccess?: boolean;
+    clearSelectionOnSuccess?: boolean;
+    successText?: string;
+  }) {
+    const {
+      ids,
+      messageScope = "page",
+      closeEditorOnSuccess = false,
+      clearSelectionOnSuccess = false,
+      successText = ids.length === 1 ? "Borrador eliminado." : "Borradores eliminados.",
+    } = args;
+
+    if (!companyId || !canEdit) return false;
+
+    const cleanIds = Array.from(new Set((ids || []).filter(Boolean)));
+    if (cleanIds.length === 0) return false;
+
+    try {
+      clearScopedMessages(messageScope);
+      setProgressMode("DELETE_DRAFT");
+      setDraftDeleting(true);
+
+      for (const id of cleanIds) {
+        await deleteDraftInternal(id);
+        if (docId === id) clearForm();
+      }
+
+      if (closeEditorOnSuccess) {
+        closeEditor();
+      }
+
+      if (clearSelectionOnSuccess) {
+        clearSelection();
+      }
+
+      await loadDrafts();
+      finishBulkRegisterProgress();
+
+      setScopedMessages([{ level: "warn", text: successText }], messageScope);
+      return true;
+    } catch (e: any) {
+      resetBulkRegisterProgressNow();
+
+      setScopedMessages(
+        [{ level: "error", text: e?.message || "No se pudo eliminar el borrador." }],
+        messageScope
+      );
+
+      await loadDrafts();
+      return false;
+    } finally {
+      setDraftDeleting(false);
+    }
+  }
+
   async function openViewDoc(doc: OriginDocLite) {
     if (!companyId) return;
 
@@ -3973,21 +4361,16 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
   async function deleteDraft(draftId: string) {
     if (!companyId || !canEdit) return;
 
-    setMessages([]);
-
     const ok = confirm("¿Eliminar este borrador? No se puede deshacer.");
     if (!ok) return;
 
-    try {
-      await deleteDraftInternal(draftId);
-
-      if (docId === draftId) clearForm();
-      setMessages([{ level: "warn", text: "Borrador eliminado." }]);
-      await loadDrafts();
-    } catch (e: any) {
-      setMessages([{ level: "error", text: e?.message || "No se pudo eliminar el borrador." }]);
-      await loadDrafts();
-    }
+    await deleteDraftsWithProgress({
+      ids: [draftId],
+      messageScope: "page",
+      closeEditorOnSuccess: false,
+      clearSelectionOnSuccess: false,
+      successText: "Borrador eliminado.",
+    });
   }
 
   const badgeStatus = useMemo(() => {
@@ -4160,41 +4543,61 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
     if (!canEdit || !companyId) return;
     if (selectedIds.length === 0) return;
 
-    const ok = confirm(`¿Registrar ${selectedIds.length} borrador(es) como VIGENTE y crear sus asientos?`);
+    const ok = confirm(
+      `¿Registrar ${selectedIds.length} borrador(es) como VIGENTE y contabilizarlos masivamente?`
+    );
     if (!ok) return;
 
     try {
+      setProgressMode("REGISTER");
+      setBulkRegistering(true);
       setMessages([]);
 
-      let okCount = 0;
-      const errors: string[] = [];
+      const { data, error } = await supabase.rpc("bulk_register_trade_docs", {
+        _company_id: companyId,
+        _trade_doc_ids: selectedIds,
+      });
 
-      for (const id of selectedIds) {
-        try {
-          await registerDraftById(id);
-          okCount += 1;
-        } catch (e: any) {
-          errors.push(`Documento ${id.slice(0, 8)}…: ${e?.message || "Error al registrar"}`);
-        }
-      }
+      if (error) throw error;
+
+      const okCount = Number((data as any)?.ok_count || 0);
+      const errorCount = Number((data as any)?.error_count || 0);
+      const errors = Array.isArray((data as any)?.errors) ? (data as any).errors : [];
 
       clearSelection();
       await loadDrafts();
+      finishBulkRegisterProgress();
 
-      if (errors.length === 0) {
-        setMessages([{ level: "warn", text: `Se registraron ${okCount} documento(s) correctamente.` }]);
+      if (errorCount === 0) {
+        setMessages([
+          {
+            level: "warn",
+            text: `Se registraron ${okCount} documento(s) correctamente.`,
+          },
+        ]);
       } else {
         setMessages([
           {
             level: "warn",
-            text: `Se registraron ${okCount} documento(s). ${errors.length} quedaron con error.`,
+            text: `Se registraron ${okCount} documento(s). ${errorCount} quedaron con error.`,
           },
-          ...errors.slice(0, 7).map((text) => ({ level: "error" as const, text })),
+          ...errors.slice(0, 7).map((x: any) => ({
+            level: "error" as const,
+            text: `Documento ${String(x.trade_doc_id || "").slice(0, 8)}…: ${x.message || "Error al registrar"}`,
+          })),
         ]);
       }
     } catch (e: any) {
-      setMessages([{ level: "error", text: e?.message || "No se pudo completar el registro masivo." }]);
+      setMessages([
+        {
+          level: "error",
+          text: e?.message || "No se pudo completar el registro masivo.",
+        },
+      ]);
+      finishBulkRegisterProgress();
       await loadDrafts();
+    } finally {
+      setBulkRegistering(false);
     }
   }
 
@@ -4202,24 +4605,19 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
     if (!canEdit || !companyId) return;
     if (selectedIds.length === 0) return;
 
-    setMessages([]);
-
     const ok = confirm(`¿Eliminar ${selectedIds.length} borrador(es)? No se puede deshacer.`);
     if (!ok) return;
 
-    try {
-      for (const id of selectedIds) {
-        await deleteDraftInternal(id);
-        if (docId === id) clearForm();
-      }
-
-      setMessages([{ level: "warn", text: "Borradores eliminados." }]);
-      clearSelection();
-      await loadDrafts();
-    } catch (e: any) {
-      setMessages([{ level: "error", text: e?.message || "No se pudo eliminar." }]);
-      await loadDrafts();
-    }
+    await deleteDraftsWithProgress({
+      ids: selectedIds,
+      messageScope: "page",
+      closeEditorOnSuccess: false,
+      clearSelectionOnSuccess: true,
+      successText:
+        selectedIds.length === 1
+          ? "Borrador eliminado."
+          : `Se eliminaron ${selectedIds.length} borrador(es).`,
+    });
   }
 
   // ✅ regla visual: botón cancelar solo si es VIGENTE (contabilizado) + permitido por settings
@@ -4227,6 +4625,74 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
 
   return (
     <div className="p-6">
+      {bulkRegisterProgressVisible ? (
+        <div className="fixed right-5 top-5 z-[120] w-[min(380px,calc(100vw-2rem))]">
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_18px_50px_rgba(15,23,42,0.18)]">
+            <div className="px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-bold text-slate-900">
+                    {bulkRegisterProgressDone
+                      ? progressMode === "SAVE_DRAFT"
+                        ? "Guardado completado"
+                        : progressMode === "DELETE_DRAFT"
+                          ? "Eliminación completada"
+                          : "Registro completado"
+                      : progressMode === "SAVE_DRAFT"
+                        ? "Guardando borrador"
+                        : progressMode === "DELETE_DRAFT"
+                          ? "Eliminando borradores"
+                          : "Registrando borradores"}
+                  </div>
+
+                  <div className="text-xs text-slate-500">
+                    {bulkRegisterProgressDone
+                      ? "El proceso terminó correctamente."
+                      : progressMode === "SAVE_DRAFT"
+                        ? "El sistema está guardando el borrador."
+                        : progressMode === "DELETE_DRAFT"
+                          ? "El sistema está eliminando los borradores seleccionados."
+                          : "El sistema está contabilizando los documentos seleccionados."}
+                  </div>
+                </div>
+
+                <div className="shrink-0 text-sm font-extrabold text-slate-700">
+                  {Math.min(100, Math.max(0, Math.round(bulkRegisterProgress)))}%
+                </div>
+              </div>
+
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className={cls(
+                    "h-full rounded-full transition-all duration-300",
+                    bulkRegisterProgressDone ? "bg-emerald-500" : "bg-slate-900"
+                  )}
+                  style={{ width: `${Math.min(100, Math.max(0, bulkRegisterProgress))}%` }}
+                />
+              </div>
+
+              <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
+                <span>
+                  {bulkRegisterProgressDone
+                    ? "Finalizado"
+                    : progressMode === "SAVE_DRAFT"
+                      ? "Guardando en servidor"
+                      : progressMode === "DELETE_DRAFT"
+                        ? "Eliminando en servidor"
+                        : "Procesando en servidor"}
+                </span>
+                <span>
+                  {bulkRegistering || draftSaving || draftDeleting
+                    ? "En curso..."
+                    : bulkRegisterProgressDone
+                      ? "Listo"
+                      : ""}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className={theme.shell}>
         <div className={cls(theme.header, "px-7 py-7")}>
           <div className={theme.glowA} />
@@ -4330,12 +4796,15 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
 
                     <button
                       type="button"
-                      className={cls(theme.btnPrimary, (!canEdit || selectedIds.length === 0) && "opacity-60 cursor-not-allowed")}
-                      disabled={!canEdit || selectedIds.length === 0}
+                      className={cls(
+                        theme.btnPrimary,
+                        (!canEdit || selectedIds.length === 0 || bulkRegistering) && "opacity-60 cursor-not-allowed"
+                      )}
+                      disabled={!canEdit || selectedIds.length === 0 || bulkRegistering}
                       onClick={bulkRegisterSelected}
                       title="Registrar seleccionados"
                     >
-                      Registrar ({selectedIds.length})
+                      {bulkRegistering ? "Registrando..." : `Registrar (${selectedIds.length})`}
                     </button>
 
                     <button
@@ -4472,13 +4941,68 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
                                   onClick={async () => {
                                     try {
                                       setMessages([]);
-                                      await registerDraftById(d.id);
-                                      setMessages([{ level: "warn", text: "Documento registrado (VIGENTE) y asiento creado." }]);
+                                      setProgressMode("REGISTER");
+                                      setBulkRegistering(true);
+
+                                      const draftHeaderForCheck: DocHeader = {
+                                        doc_type: d.doc_type,
+                                        fiscal_doc_code: String(d.fiscal_doc_code || ""),
+                                        status: d.status,
+                                        issue_date: d.issue_date || todayISO(),
+                                        due_date: d.issue_date || todayISO(),
+                                        series: String(d.series || ""),
+                                        number: String(d.number || ""),
+                                        currency_code: baseCurrency,
+                                        branch_id: "",
+                                        counterparty_identifier: String(d.counterparty_identifier_snapshot || ""),
+                                        counterparty_name: String(d.counterparty_name_snapshot || ""),
+                                        reference: "",
+                                        cancelled_at: "",
+                                        cancel_reason: "",
+                                        origin_doc_id: null,
+                                        origin_label: "",
+                                        origin_doc_type: null,
+                                        origin_fiscal_doc_code: null,
+                                        origin_issue_date: null,
+                                        origin_currency_code: null,
+                                        origin_net_taxable: null,
+                                        origin_net_exempt: null,
+                                        origin_tax_total: null,
+                                        origin_grand_total: null,
+                                        origin_balance: null,
+                                        origin_payment_status: null,
+                                        origin_status: null,
+                                      };
+
+                                      if (hasFiscalFolioData(draftHeaderForCheck)) {
+                                        await assertUniqueFiscalFolio({
+                                          companyId,
+                                          header: draftHeaderForCheck,
+                                          excludeDocId: d.id,
+                                        });
+                                      }
+
+                                      const result = await registerTradeDocsViaBulk([d.id]);
+
                                       clearSelection();
                                       await loadDrafts();
+                                      finishBulkRegisterProgress();
+
+                                      if (result.errorCount > 0) {
+                                        const firstError = result.errors?.[0]?.message || "No se pudo registrar.";
+                                        setMessages([{ level: "error", text: firstError }]);
+                                        return;
+                                      }
+
+                                      setMessages([
+                                        { level: "warn", text: "Documento registrado (VIGENTE) y contabilizado correctamente." },
+                                      ]);
                                     } catch (e: any) {
+                                      resetBulkRegisterProgressNow();
                                       setMessages([{ level: "error", text: e?.message || "No se pudo registrar." }]);
                                       await loadDrafts();
+                                    } finally {
+                                      setBulkRegistering(false);
                                     }
                                   }}
                                   title="Registrar"
@@ -4598,6 +5122,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
         }}
         ellipsis={ellipsis}
         folioLabel={folioLabel}
+        messages={editorMessages}
         saveDraftMVP={saveDraftMVP}
         markAsVigenteMVP={markAsVigenteMVP}
         deleteDraftMVP={deleteDraftMVP}
@@ -4697,6 +5222,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
         }}
         ellipsis={ellipsis}
         folioLabel={folioLabel}
+        messages={[]}
         saveDraftMVP={async () => {}}
         markAsVigenteMVP={async () => {}}
         deleteDraftMVP={async () => {}}
