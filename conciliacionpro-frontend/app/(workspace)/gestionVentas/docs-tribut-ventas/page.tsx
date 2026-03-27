@@ -758,6 +758,10 @@ type PaymentRow = {
   auth_code: string;
 
   reference: string;
+
+  // uso interno para NC / ND
+  source_amount?: number;
+  source_is_primary?: boolean;
 };
 
 type JournalLine = {
@@ -887,6 +891,8 @@ function makePaymentRow(): PaymentRow {
     card_last4: "",
     auth_code: "",
     reference: "",
+    source_amount: 0,
+    source_is_primary: false,
   };
 }
 
@@ -1605,6 +1611,30 @@ export default function Page() {
 
     return { net_taxable, net_exempt, tax_total, grand_total, paid, balance };
   }, [lines, payments]);
+
+  useEffect(() => {
+    if (!isReverseNoteDocType(header.doc_type)) return;
+    if (!header.origin_doc_id) return;
+    if (payments.length === 0) return;
+
+    const hasSourcePayments = payments.some((p) => Number(p.source_amount || 0) > 0);
+    if (!hasSourcePayments) return;
+
+    const nextPayments = autoFillNotePaymentsFromLines(payments, totals.grand_total);
+
+    const changed = nextPayments.some((p, idx) => {
+      const prev = payments[idx];
+      return String(prev?.amount || "") !== String(p.amount || "");
+    });
+
+    if (!changed) return;
+
+    setPayments(nextPayments);
+  }, [
+    header.doc_type,
+    header.origin_doc_id,
+    totals.grand_total,
+  ]);
 
   useEffect(() => {
     if (!journalAutoMode) return;
@@ -2799,16 +2829,21 @@ async function loadOriginPayments(originTradeDocId: string): Promise<PaymentRow[
   let parsedPayments: PaymentRow[] = (((payData as any[]) || []).map((r: any) => {
     const p = Array.isArray(r.payments) ? r.payments[0] : r.payments;
 
+    const sourceAmount =
+      r.allocated_amount != null
+        ? Number(r.allocated_amount)
+        : Number(p?.total_amount ?? 0);
+
     return {
       id: uid(), // nuevo id UI para el nuevo documento
       method: (p?.method || "TRANSFERENCIA") as PaymentRow["method"],
-      amount: r.allocated_amount != null
-        ? String(r.allocated_amount)
-        : String(p?.total_amount ?? ""),
+      amount: sourceAmount > 0 ? String(sourceAmount) : "",
       card_kind: (p?.card_kind || "") as PaymentRow["card_kind"],
       card_last4: String(p?.card_last4 || ""),
       auth_code: String(p?.auth_code || ""),
       reference: String(p?.reference || ""),
+      source_amount: sourceAmount,
+      source_is_primary: false,
     };
   })) as PaymentRow[];
 
@@ -2822,30 +2857,97 @@ async function loadOriginPayments(originTradeDocId: string): Promise<PaymentRow[
 
     parsedPayments = (((payFallback as any[]) || [])
       .filter((p: any) => p?.extra?.trade_doc_id === originTradeDocId)
-      .map((p: any) => ({
-        id: uid(),
-        method: (p.method || "TRANSFERENCIA") as PaymentRow["method"],
-        amount: String(p.total_amount ?? ""),
-        card_kind: (p.card_kind || "") as PaymentRow["card_kind"],
-        card_last4: String(p.card_last4 || ""),
-        auth_code: String(p.auth_code || ""),
-        reference: String(p.reference || ""),
-      }))) as PaymentRow[];
+      .map((p: any) => {
+        const sourceAmount = Number(p.total_amount ?? 0);
+
+        return {
+          id: uid(),
+          method: (p.method || "TRANSFERENCIA") as PaymentRow["method"],
+          amount: sourceAmount > 0 ? String(sourceAmount) : "",
+          card_kind: (p.card_kind || "") as PaymentRow["card_kind"],
+          card_last4: String(p.card_last4 || ""),
+          auth_code: String(p.auth_code || ""),
+          reference: String(p.reference || ""),
+          source_amount: sourceAmount,
+          source_is_primary: false,
+        };
+      })) as PaymentRow[];
   }
 
   return parsedPayments;
 }
 
 function buildEditablePaymentsFromOriginForNote(originPayments: PaymentRow[]): PaymentRow[] {
-  return originPayments.map((p) => ({
+  const normalized: PaymentRow[] = originPayments.map((p): PaymentRow => ({
     ...makePaymentRow(),
-    method: p.method,
+    method: p.method as PaymentRow["method"],
     amount: "",
-    card_kind: p.card_kind || "",
-    card_last4: p.card_last4 || "",
-    auth_code: p.auth_code || "",
-    reference: p.reference || "",
+    card_kind: (p.card_kind || "") as PaymentRow["card_kind"],
+    card_last4: String(p.card_last4 || ""),
+    auth_code: String(p.auth_code || ""),
+    reference: String(p.reference || ""),
+    source_amount: Number(p.source_amount ?? toNum(p.amount)),
+    source_is_primary: false,
   }));
+
+  if (normalized.length === 0) {
+    return normalized;
+  }
+
+  const primaryIndex = normalized.reduce((bestIdx, p, idx, arr) => {
+    const current = Number(p.source_amount || 0);
+    const best = Number(arr[bestIdx]?.source_amount || 0);
+    return current > best ? idx : bestIdx;
+  }, 0);
+
+  const result: PaymentRow[] = normalized.map((p, idx): PaymentRow => ({
+    ...p,
+    source_is_primary: idx === primaryIndex,
+  }));
+
+  return result;
+}
+
+function autoFillNotePaymentsFromLines(notePayments: PaymentRow[], noteTotal: number): PaymentRow[] {
+  const total = Math.max(0, Number(noteTotal || 0));
+  if (notePayments.length === 0) return notePayments;
+
+  const paymentsWithSource = notePayments.map((p) => ({
+    ...p,
+    source_amount: Math.max(0, Number(p.source_amount || 0)),
+  }));
+
+  const originTotal = paymentsWithSource.reduce((s, p) => s + Number(p.source_amount || 0), 0);
+  const isFullAmount = originTotal > 0 && Math.abs(originTotal - total) <= 0.5;
+
+  // 1) Si la nota es por el total exacto del origen => copiar montos exactos
+  if (isFullAmount) {
+    return paymentsWithSource.map((p) => ({
+      ...p,
+      amount: Number(p.source_amount || 0) > 0 ? String(Number(p.source_amount || 0)) : "",
+    }));
+  }
+
+  // 2) Si es parcial y hay solo 1 forma de pago => todo a esa forma
+  if (paymentsWithSource.length === 1) {
+    return paymentsWithSource.map((p) => ({
+      ...p,
+      amount: total > 0 ? String(total) : "",
+    }));
+  }
+
+  // 3) Si es parcial y hay varias => todo al pago principal (el de mayor monto origen)
+  if (paymentsWithSource.length > 1) {
+    const primaryIndex = paymentsWithSource.findIndex((p) => p.source_is_primary);
+    const idx = primaryIndex >= 0 ? primaryIndex : 0;
+
+    return paymentsWithSource.map((p, i) => ({
+      ...p,
+      amount: i === idx && total > 0 ? String(total) : "",
+    }));
+  }
+
+  return paymentsWithSource;
 }
 
 async function loadOriginJournalReversed(originTradeDocId: string): Promise<JournalLine[]> {
@@ -3923,118 +4025,12 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
     if (!companyId) throw new Error("Falta companyId.");
     if (!draftId) throw new Error("Falta draftId.");
 
-    // 1) Validar que el documento exista y que siga siendo BORRADOR
-    const { data: docRow, error: docRowError } = await supabase
-      .from("trade_docs")
-      .select("id,journal_entry_id,status")
-      .eq("company_id", companyId)
-      .eq("id", draftId)
-      .maybeSingle();
+    const { error } = await supabase.rpc("delete_trade_doc_draft", {
+      _company_id: companyId,
+      _trade_doc_id: draftId,
+    });
 
-    if (docRowError) throw docRowError;
-    if (!docRow) throw new Error("No se encontró el borrador.");
-    if (docRow.status !== "BORRADOR") {
-      throw new Error("Solo se pueden eliminar documentos en estado BORRADOR.");
-    }
-
-    const journalEntryId = (docRow as any).journal_entry_id as string | null;
-
-    // 2) Buscar pagos relacionados por allocation
-    const { data: paymentRows, error: paymentRowsError } = await supabase
-      .from("payment_allocations")
-      .select("payment_id")
-      .eq("company_id", companyId)
-      .eq("trade_doc_id", draftId);
-
-    if (paymentRowsError) throw paymentRowsError;
-
-    const paymentIds = Array.from(
-      new Set(((paymentRows as any[]) || []).map((x) => x.payment_id).filter(Boolean))
-    );
-
-    // 3) Borrar asignaciones de pago primero
-    const { error: deleteAllocError } = await supabase
-      .from("payment_allocations")
-      .delete()
-      .eq("company_id", companyId)
-      .eq("trade_doc_id", draftId);
-
-    if (deleteAllocError) throw deleteAllocError;
-
-    // 4) Borrar pagos relacionados
-    if (paymentIds.length > 0) {
-      const { error: deletePaymentsError } = await supabase
-        .from("payments")
-        .delete()
-        .eq("company_id", companyId)
-        .in("id", paymentIds);
-
-      if (deletePaymentsError) throw deletePaymentsError;
-    }
-
-    // 5) Borrar líneas del documento
-    const { error: deleteDocLinesError } = await supabase
-      .from("trade_doc_lines")
-      .delete()
-      .eq("company_id", companyId)
-      .eq("trade_doc_id", draftId);
-
-    if (deleteDocLinesError) throw deleteDocLinesError;
-
-    // 6) Borrar asiento borrador y sus líneas, solo si existe y sigue en DRAFT
-    if (journalEntryId) {
-      const { data: journalRow, error: journalRowError } = await supabase
-        .from("journal_entries")
-        .select("id,status")
-        .eq("company_id", companyId)
-        .eq("id", journalEntryId)
-        .maybeSingle();
-
-      if (journalRowError) throw journalRowError;
-
-      const { error: unlinkJournalError } = await supabase
-        .from("trade_docs")
-        .update({ journal_entry_id: null })
-        .eq("company_id", companyId)
-        .eq("id", draftId)
-        .eq("status", "BORRADOR");
-
-      if (unlinkJournalError) throw unlinkJournalError;
-
-      if (journalRow && journalRow.status === "DRAFT") {
-        const { error: deleteJournalLinesError } = await supabase
-          .from("journal_entry_lines")
-          .delete()
-          .eq("company_id", companyId)
-          .eq("journal_entry_id", journalEntryId);
-
-        if (deleteJournalLinesError) throw deleteJournalLinesError;
-
-        const { error: deleteJournalEntryError } = await supabase
-          .from("journal_entries")
-          .delete()
-          .eq("company_id", companyId)
-          .eq("id", journalEntryId)
-          .eq("status", "DRAFT");
-
-        if (deleteJournalEntryError) throw deleteJournalEntryError;
-      }
-    }
-
-    // 7) Borrar documento principal y VALIDAR que realmente se borró
-    const { data: deletedDocs, error: deleteDocError } = await supabase
-      .from("trade_docs")
-      .delete()
-      .eq("company_id", companyId)
-      .eq("id", draftId)
-      .eq("status", "BORRADOR")
-      .select("id");
-
-    if (deleteDocError) throw deleteDocError;
-
-    if (!deletedDocs || deletedDocs.length === 0) {
-      throw new Error("El borrador no pudo eliminarse de trade_docs.");
-    }
+    if (error) throw error;
   }
 
   async function deleteDraftsWithProgress(args: {
@@ -4062,9 +4058,44 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
       setProgressMode("DELETE_DRAFT");
       setDraftDeleting(true);
 
-      for (const id of cleanIds) {
-        await deleteDraftInternal(id);
-        if (docId === id) clearForm();
+      if (cleanIds.length === 1) {
+        await deleteDraftInternal(cleanIds[0]);
+        if (docId === cleanIds[0]) clearForm();
+      } else {
+        const { data, error } = await supabase.rpc("bulk_delete_trade_doc_drafts", {
+          _company_id: companyId,
+          _trade_doc_ids: cleanIds,
+        });
+
+        if (error) throw error;
+
+        const okCount = Number((data as any)?.ok_count || 0);
+        const errorCount = Number((data as any)?.error_count || 0);
+        const errors = Array.isArray((data as any)?.errors) ? (data as any).errors : [];
+
+        if (docId && cleanIds.includes(docId)) {
+          clearForm();
+        }
+
+        if (errorCount > 0) {
+          finishBulkRegisterProgress();
+          setScopedMessages(
+            [
+              {
+                level: "warn",
+                text: `Se eliminaron ${okCount} borrador(es). ${errorCount} quedaron con error.`,
+              },
+              ...errors.slice(0, 7).map((x: any) => ({
+                level: "error" as const,
+                text: `Documento ${String(x.trade_doc_id || "").slice(0, 8)}…: ${x.message || "Error al eliminar"}`,
+              })),
+            ],
+            messageScope
+          );
+
+          await loadDrafts();
+          return false;
+        }
       }
 
       if (closeEditorOnSuccess) {
