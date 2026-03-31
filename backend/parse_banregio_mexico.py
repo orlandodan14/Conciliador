@@ -159,6 +159,28 @@ def parse_concepto(texto):
         "descripcion": descripcion,
     }
 
+def extraer_cuenta_nb_be(texto):
+    """
+    Extrae el número de cuenta solo para movimientos que comienzan con:
+    - (NB)
+    - (BE)
+
+    Ejemplos:
+    (NB) Recepcion de cuenta: 019027210018. FACTURA...
+    (BE) Traspaso a cuenta: 957979110017. ANTICIPO...
+    """
+    if not isinstance(texto, str):
+        return None
+
+    texto = texto.strip()
+
+    if texto.startswith("(NB)") or texto.startswith("(BE)"):
+        match = re.search(r"cuenta:\s*(\d+)", texto, re.IGNORECASE)
+        if match:
+            return match.group(1)
+
+    return None
+
 # ==============================
 # BASE DE DATOS
 # ==============================
@@ -254,24 +276,32 @@ def main():
     rows = []
 
     for _, row in df.iterrows():
-        parsed = parse_concepto(str(row["concepto"]))
+        concepto_texto = str(row["concepto"]).strip()
+        parsed = parse_concepto(concepto_texto)
+        cuenta_nb_be = extraer_cuenta_nb_be(concepto_texto)
 
-        # 🔹 Corrección SPEI: distinguir ABONO vs CARGO según montos
+        # Mantener lógica original
         tipo_documento = parsed["tipo_documento"]
 
+        # SPEI: se deja exactamente como estaba
         if " SPEI." in parsed["descripcion"]:
             if row["cargos"] > 0:
                 tipo_documento = "CARGO BANCARIO"
             else:
                 tipo_documento = "ABONO BANCARIO"
 
+        # Regla específica adicional para NB / BE
+        if concepto_texto.startswith("(NB)"):
+            tipo_documento = "ABONO BANCARIO"
+        elif concepto_texto.startswith("(BE)"):
+            tipo_documento = "CARGO BANCARIO"
 
         rows.append({
             "fecha": pd.to_datetime(row["fecha"], dayfirst=True),
             "banco": BANCO,
             "cuenta": None,
             "banco_origen": parsed["banco_origen"],
-            "cuenta_origen": parsed["cuenta_origen"],
+            "cuenta_origen": cuenta_nb_be if cuenta_nb_be else parsed["cuenta_origen"],
             "rut_pagador": None,
             "nombre_contraparte": parsed["nombre_contraparte"],
             "tipo_documento": tipo_documento,

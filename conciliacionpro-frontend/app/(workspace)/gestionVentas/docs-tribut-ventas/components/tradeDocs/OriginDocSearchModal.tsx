@@ -2,10 +2,14 @@
 
 import React from "react";
 import { Eye, Link2 } from "lucide-react";
+import type {
+  DocStatus,
+  OriginDocLite,
+  OriginSearchFilters,
+} from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/types";
+import { cls } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/helpers";
 
-function cls(...a: Array<string | false | null | undefined>) {
-  return a.filter(Boolean).join(" ");
-}
+
 
 const iconBtn =
   "inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50";
@@ -13,7 +17,7 @@ const iconBtn =
 const iconBtnPrimary =
   "inline-flex h-9 w-9 items-center justify-center rounded-lg bg-slate-900 text-white hover:bg-slate-800";
 
-function statusBadgeClass(status?: DocStatus | null) {
+function statusBadgeClass(status?: string | null) {
   if (status === "VIGENTE") {
     return "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold bg-emerald-100 text-emerald-800";
   }
@@ -26,35 +30,7 @@ function statusBadgeClass(status?: DocStatus | null) {
   return "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold bg-slate-100 text-slate-700";
 }
 
-type DocType = "INVOICE" | "CREDIT_NOTE" | "DEBIT_NOTE";
-type DocStatus = "BORRADOR" | "VIGENTE" | "CANCELADO";
 
-export type OriginDocLite = {
-  id: string;
-  doc_type?: DocType | null;
-  fiscal_doc_code?: string | null;
-  series?: string | null;
-  number?: string | null;
-  issue_date?: string | null;
-
-  net_taxable?: number | null;
-  net_exempt?: number | null;
-  tax_total?: number | null;
-  grand_total?: number | null;
-  balance?: number | null;
-
-  currency_code?: string | null;
-  status?: DocStatus | null;
-};
-
-export type OriginSearchFilters = {
-  fiscal_doc_code: string;
-  folio: string;
-  issue_date_from: string;
-  issue_date_to: string;
-  only_open_balance: boolean;
-  only_vigente: boolean;
-};
 
 export function OriginDocSearchModal(props: {
   open: boolean;

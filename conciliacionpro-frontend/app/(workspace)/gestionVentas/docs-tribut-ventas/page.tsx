@@ -6,69 +6,57 @@ import * as XLSX from "xlsx";
 import { CounterpartyCreateModal, Counterparty as CPCounterparty } from "@/app/(workspace)/components/counterparties/CounterpartyCreateModal";
 import { Pencil, CheckCircle2, Trash2 } from "lucide-react";
 import { TradeDocEditorModal } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocEditorModal";
+import { OriginDocSearchModal } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/OriginDocSearchModal";
+import type {
+  AccountDefaultRow,
+  AccountNodeLite,
+  AccountPostingPolicyLite,
+  BranchLite,
+  BusinessLineLite,
+  DocHeader,
+  DocLine,
+  DocType,
+  DocStatus,
+  DraftRow,
+  EditorTab,
+  FiscalDocSettingsLite,
+  FiscalDocTypeLite,
+  ItemLite,
+  JournalLine,
+  OriginDocLite,
+  OriginSearchFilters,
+  PaymentRow,
+} from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/types";
 import {
-  OriginDocSearchModal,
-  type OriginSearchFilters,
-  type OriginDocLite,
-} from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/OriginDocSearchModal";
+  cls,
+  todayISO,
+  toNum,
+  formatNumber,
+  uid,
+  folioLabel,
+  normalizeFolioPart,
+  hasFiscalFolioData,
+  getJournalDocTypeLabel,
+  isReverseNoteDocType,
+  buildJournalDescriptionFromHeader,
+  ellipsis,
+  normalizeIdentifier,
+  calcLineAmounts,
+  normalizePeriodStatus,
+  makeDocLine,
+  makeJournalLine,
+  makePaymentRow,
+  renumber,
+  getDefaultFiscalDocTypeIdByDocType,
+  getDefaultFiscalDocCodeByDocType,
+} from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/helpers";
+import { LabelInline } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/LabelInline";
 
 /**
  * =========================
  * Helpers
  * =========================
  */
-function cls(...a: Array<string | false | null | undefined>) {
-  return a.filter(Boolean).join(" ");
-}
-
-function todayISO() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
-}
-
-function toNum(v: any) {
-  const s = String(v ?? "").trim().replace(",", ".");
-  if (!s) return 0;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function formatNumber(val: number, decimals: number) {
-  try {
-    return val.toLocaleString("es-CL", {
-      minimumFractionDigits: decimals,
-      maximumFractionDigits: decimals,
-    });
-  } catch {
-    return String(val);
-  }
-}
-
-function uid() {
-  return Math.random().toString(16).slice(2) + Date.now().toString(16);
-}
-
-function folioLabel(series?: string | null, number?: string | null) {
-  const s = String(series ?? "").trim();
-  const n = String(number ?? "").trim();
-  if (!s && !n) return "—";
-  return s ? `${s}-${n}` : n;
-}
-
-function normalizeFolioPart(value: string | null | undefined) {
-  return String(value ?? "").trim().toUpperCase();
-}
-
-function hasFiscalFolioData(h: DocHeader) {
-  return (
-    String(h.fiscal_doc_code || "").trim() !== "" &&
-    String(h.number || "").trim() !== ""
-  );
-}
-
 async function findDuplicateFiscalFolio(args: {
   companyId: string;
   fiscalDocCode: string;
@@ -133,87 +121,6 @@ async function assertUniqueFiscalFolio(args: {
   }
 }
 
-function getJournalDocTypeLabel(docType: DocType) {
-  if (docType === "DEBIT_NOTE") return "NOTA DE DÉBITO (INGRESO)";
-  if (docType === "CREDIT_NOTE") return "NOTA DE CRÉDITO (REBAJA)";
-  return "DOCUMENTO (INGRESO)";
-}
-
-function isReverseNoteDocType(docType: DocType) {
-  return docType === "CREDIT_NOTE" || docType === "DEBIT_NOTE";
-}
-
-function buildJournalDescriptionFromHeader(h: DocHeader) {
-  const typeLabel = getJournalDocTypeLabel(h.doc_type);
-  const ownFolio = folioLabel(h.series, h.number);
-
-  const parts: string[] = [typeLabel];
-
-  if (ownFolio !== "—") {
-    parts.push(`Folio ${ownFolio}`);
-  }
-
-  const isNote = h.doc_type === "DEBIT_NOTE" || h.doc_type === "CREDIT_NOTE";
-  if (isNote && String(h.origin_label || "").trim()) {
-    parts.push(`Afecta ${String(h.origin_label).trim()}`);
-  }
-
-  return parts.join(" - ");
-}
-
-function ellipsis(s: string, max: number) {
-  const t = String(s ?? "");
-  if (t.length <= max) return t;
-  return t.slice(0, Math.max(0, max - 1)) + "…";
-}
-
-function normalizeIdentifier(raw: string) {
-  // Igual que en el modal (multi-país): solo alfanumérico + uppercase
-  return String(raw ?? "")
-    .trim()
-    .toUpperCase()
-    .replace(/[^0-9A-Z]+/g, "");
-}
-
-function calcLineAmounts(l: DocLine) {
-  // tú igual puedes dejar qty/unit por si quieres, pero no se usan si tú llenas manual
-  const qty = Math.max(0, toNum(l.qty));
-  const unit = Math.max(0, toNum(l.unit_price));
-  const base = qty * unit;
-
-  const rate = Math.max(0, toNum(l.tax_rate));
-
-  // ✅ tú llenas SIEMPRE exento y afecto manual
-  const ex_o = String(l.ex_override || "").trim();
-  const af_o = String(l.af_override || "").trim();
-  const tot_o = String(l.total_override || "").trim();
-
-  // Si no escribiste ex/af, usamos un fallback (por si alguien usa qty/unit)
-  const ex = ex_o !== "" ? Math.max(0, toNum(ex_o)) : (l.is_taxable ? 0 : base);
-  const af = af_o !== "" ? Math.max(0, toNum(af_o)) : (l.is_taxable ? base : 0);
-
-  // ✅ IVA SIEMPRE se calcula desde AFECTO
-  const iva = af > 0 && rate > 0 ? af * (rate / 100) : 0;
-
-  // ✅ Total “real” (el que usaremos para totales)
-  const total_calc = ex + af + iva;
-
-  // ✅ Total editable: si lo escriben, solo se muestra, NO afecta cálculos
-  const total_display = tot_o !== "" ? Math.max(0, toNum(tot_o)) : total_calc;
-
-  return {
-    qty,
-    unit,
-    base,
-    rate,
-    ex,
-    af,
-    iva,
-    total: total_calc,        // ✅ este es el real
-    total_display,            // ✅ este es el que se muestra si overridean
-  };
-}
-
 function isUnknownColumnError(err: any) {
   const msg = String(err?.message ?? "");
   return /column .* does not exist/i.test(msg) || /does not exist in the rowset/i.test(msg);
@@ -262,7 +169,6 @@ async function safeUpsertSalesDoc(args: {
     }
   }
 }
-
 
 async function safeDeleteByCompanyAndEntry(table: string, companyId: string, journalEntryId: string) {
   const { error } = await supabase
@@ -480,14 +386,6 @@ async function rollbackDraftArtifacts(args: {
   }
 }
 
-function normalizePeriodStatus(value: any): string {
-  return String(value ?? "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .trim()
-    .toUpperCase();
-}
-
 async function getCurrentAccountingPeriodId(
   companyId: string,
   issueDate: string
@@ -574,23 +472,6 @@ const iconBtnPrimary =
 const iconBtnDanger =
   "inline-flex h-9 w-9 items-center justify-center rounded-lg border border-rose-200 bg-white text-rose-700 hover:bg-rose-50";
 
-function LabelInline({
-  label,
-  field,
-  className,
-}: {
-  label: string;
-  field: string;
-  className?: string;
-}) {
-  return (
-    <div className={cls("flex items-baseline gap-1 text-xs font-medium text-slate-600", className)}>
-      <span>{label}</span>
-      <span className="text-slate-300">/</span>
-      <span className="text-[11px] font-normal text-slate-500">{field}</span>
-    </div>
-  );
-}
 
 function Modal({
   open,
@@ -647,256 +528,14 @@ function Modal({
   );
 }
 
-/**
- * =========================
- * Tipos
- * =========================
- */
-type DocType = "INVOICE" | "CREDIT_NOTE" | "DEBIT_NOTE";
-type DocStatus = "BORRADOR" | "VIGENTE" | "CANCELADO";
 
-type DocHeader = {
-  doc_type: DocType;
-  fiscal_doc_code: string;
-
-  status: DocStatus;
-
-  issue_date: string;
-  due_date: string;
-
-  series: string;
-  number: string;
-
-  currency_code: string;
-  branch_id: string;
-
-  counterparty_identifier: string;
-  counterparty_name: string;
-
-  reference: string;
-
-  cancelled_at: string;
-  cancel_reason: string;
-
-  origin_doc_id: string | null;
-  origin_label: string;
-
-  origin_doc_type?: DocType | null;
-  origin_fiscal_doc_code?: string | null;
-  origin_issue_date?: string | null;
-  origin_currency_code?: string | null;
-  origin_net_taxable?: number | null;
-  origin_net_exempt?: number | null;
-  origin_tax_total?: number | null;
-  origin_grand_total?: number | null;
-  origin_balance?: number | null;
-  origin_payment_status?: "PAGADO" | "PARCIAL" | "PENDIENTE" | null;
-  origin_status?: DocStatus | "PAGADO" | "PARCIAL" | "PENDIENTE" | null;
-};
-
-type FiscalDocTypeLite = {
-  id: string;
-  code: string;
-  name: string;
-  scope: "VENTA" | "COMPRA" | "AMBOS";
-  is_active: boolean;
-};
-
-type FiscalDocSettingsLite = {
-  enabled: boolean;
-  require_sales: boolean;
-  default_sales_doc_type_id: string | null;
-  default_sales_invoice_doc_type_id: string | null;
-  default_sales_debit_note_doc_type_id: string | null;
-  default_sales_credit_note_doc_type_id: string | null;
-};
-
-type BranchLite = {
-  id: string;
-  code: string;
-  name: string;
-  is_active: boolean;
-  is_default: boolean;
-};
-
-type ItemLite = {
-  id: string;
-  sku: string;
-  name: string;
-  description?: string | null;
-  price_sale: number;
-  tax_exempt: boolean;
-  is_active: boolean;
-  business_line_id?: string | null;
-};
-
-type DocLine = {
-  line_no: number;
-  item_id: string | null;
-  sku: string;
-  description: string;
-
-  qty: string;
-  unit_price: string;
-
-  is_taxable: boolean;
-  tax_rate: string;
-
-  ex_override: string;
-  af_override: string;
-  iva_override: string;
-  total_override: string;
-};
-
-type PaymentRow = {
-  id: string;
-  method: "EFECTIVO" | "TRANSFERENCIA" | "TARJETA" | "CHEQUE" | "OTRO";
-  amount: string;
-
-  card_kind: "" | "DEBITO" | "CREDITO";
-  card_last4: string;
-  auth_code: string;
-
-  reference: string;
-
-  // uso interno para NC / ND
-  source_amount?: number;
-  source_is_primary?: boolean;
-};
-
-type JournalLine = {
-  line_no: number;
-  account_code: string;
-  description: string;
-  debit: string;
-  credit: string;
-
-  cost_center_id: string | null;
-  business_line_id: string | null;
-  branch_id: string | null;
-
-  cost_center_code: string;
-  business_line_code: string;
-  branch_code: string;
-};
-
-
-type DraftRow = {
-  id: string;
-  company_id: string;
-
-  doc_type: DocType;
-  fiscal_doc_code: string | null;
-
-  status: DocStatus;
-
-  issue_date: string | null;
-  series: string | null;
-  number: string | null;
-
-  counterparty_identifier_snapshot: string | null;
-  counterparty_name_snapshot: string | null;
-
-  net_taxable: number | null;
-  net_exempt: number | null;
-  tax_total: number | null;
-  grand_total: number | null;
-
-  created_at: string | null;
-};
-
-type AccountNodeLite = {
-  id: string;
-  code: string;
-  name: string;
-};
-
-type AccountDefaultRow = {
-  id: string;
-  company_id: string;
-  process_key: string;
-  account_node_id: string | null;
-  is_active: boolean;
-  notes: string | null;
-};
-
-type BusinessLineLite = {
-  id: string;
-  code: string;
-  name: string;
-  is_active: boolean;
-};
-
-type AccountPostingPolicyLite = {
-  id: string;
-  company_id: string;
-  account_node_id: string;
-  require_cc: boolean;
-  require_cu: boolean;
-  require_suc: boolean;
-  require_item: boolean;
-  require_cp: boolean;
-  enforcement: string;
-  is_active: boolean;
-  effective_from: string;
-  effective_to: string | null;
-};
 
 /**
  * =========================
  * Defaults
  * =========================
  */
-function makeDocLine(no: number): DocLine {
-  return {
-    line_no: no,
-    item_id: null,
-    sku: "",
-    description: "",
-    qty: "1",
-    unit_price: "",
-    is_taxable: true,
-    tax_rate: "19",
-    ex_override: "",
-    af_override: "",
-    iva_override: "",
-    total_override: "",
-  };
-}
 
-function makeJournalLine(no: number): JournalLine {
-  return {
-    line_no: no,
-    account_code: "",
-    description: "",
-    debit: "",
-    credit: "",
-
-    cost_center_id: null,
-    business_line_id: null,
-    branch_id: null,
-
-    cost_center_code: "",
-    business_line_code: "",
-    branch_code: "",
-  };
-}
-
-function makePaymentRow(): PaymentRow {
-  return {
-    id: uid(),
-    method: "TRANSFERENCIA",
-    amount: "",
-    card_kind: "",
-    card_last4: "",
-    auth_code: "",
-    reference: "",
-    source_amount: 0,
-    source_is_primary: false,
-  };
-}
-
-type EditorTab = "CABECERA" | "LINEAS" | "PAGOS" | "ASIENTO";
 
 /**
  * =========================
@@ -1691,36 +1330,7 @@ export default function Page() {
   function setHeaderPatch(patch: Partial<DocHeader>) {
     setHeader((h) => ({ ...h, ...patch }));
   }
-  function getDefaultFiscalDocTypeIdByDocType(
-    docType: DocType,
-    cfg: FiscalDocSettingsLite
-  ): string | null {
-    if (docType === "INVOICE") {
-      return cfg.default_sales_invoice_doc_type_id || cfg.default_sales_doc_type_id || null;
-    }
-
-    if (docType === "DEBIT_NOTE") {
-      return cfg.default_sales_debit_note_doc_type_id || null;
-    }
-
-    if (docType === "CREDIT_NOTE") {
-      return cfg.default_sales_credit_note_doc_type_id || null;
-    }
-
-    return null;
-  }
-
-  function getDefaultFiscalDocCodeByDocType(
-    docType: DocType,
-    cfg: FiscalDocSettingsLite,
-    types: FiscalDocTypeLite[]
-  ): string {
-    const id = getDefaultFiscalDocTypeIdByDocType(docType, cfg);
-    if (!id) return "";
-
-    const found = types.find((t) => t.id === id && t.is_active);
-    return found?.code || "";
-  }
+  
   function setHeaderBranchCode(rawCode: string) {
     const typedCode = String(rawCode || "").trim();
     const foundBranch = typedCode ? branchByCode[typedCode] : null;
@@ -1729,9 +1339,6 @@ export default function Page() {
       ...h,
       branch_id: foundBranch?.id || "",
     }));
-  }
-  function renumber<T extends { line_no: number }>(arr: T[]) {
-    return arr.map((x, i) => ({ ...x, line_no: i + 1 }));
   }
 
   function openCreateCounterparty(identifier: string) {
@@ -1793,7 +1400,7 @@ export default function Page() {
 
   // Payments
   function addPaymentRow() {
-    setPayments((p) => [...p, makePaymentRow()]);
+    setPayments((p) => [...p, makePaymentRow(header.issue_date || todayISO())]);
   }
   function removePaymentRow(id: string) {
     setPayments((p) => p.filter((x) => x.id !== id));
@@ -2812,6 +2419,7 @@ async function loadOriginPayments(originTradeDocId: string): Promise<PaymentRow[
       allocated_amount,
       payments (
         id,
+        payment_date,
         method,
         reference,
         card_kind,
@@ -2836,6 +2444,7 @@ async function loadOriginPayments(originTradeDocId: string): Promise<PaymentRow[
 
     return {
       id: uid(), // nuevo id UI para el nuevo documento
+      payment_date: String(p?.payment_date || header.issue_date || todayISO()),
       method: (p?.method || "TRANSFERENCIA") as PaymentRow["method"],
       amount: sourceAmount > 0 ? String(sourceAmount) : "",
       card_kind: (p?.card_kind || "") as PaymentRow["card_kind"],
@@ -2850,7 +2459,7 @@ async function loadOriginPayments(originTradeDocId: string): Promise<PaymentRow[
   if (parsedPayments.length === 0) {
     const { data: payFallback, error: payFallbackError } = await supabase
       .from("payments")
-      .select("id,method,reference,card_kind,card_last4,auth_code,total_amount,extra")
+      .select("id,payment_date,method,reference,card_kind,card_last4,auth_code,total_amount,extra")
       .eq("company_id", companyId);
 
     if (payFallbackError) throw payFallbackError;
@@ -2862,6 +2471,7 @@ async function loadOriginPayments(originTradeDocId: string): Promise<PaymentRow[
 
         return {
           id: uid(),
+          payment_date: String(p.payment_date || header.issue_date || todayISO()),
           method: (p.method || "TRANSFERENCIA") as PaymentRow["method"],
           amount: sourceAmount > 0 ? String(sourceAmount) : "",
           card_kind: (p.card_kind || "") as PaymentRow["card_kind"],
@@ -2880,6 +2490,7 @@ async function loadOriginPayments(originTradeDocId: string): Promise<PaymentRow[
 function buildEditablePaymentsFromOriginForNote(originPayments: PaymentRow[]): PaymentRow[] {
   const normalized: PaymentRow[] = originPayments.map((p): PaymentRow => ({
     ...makePaymentRow(),
+    payment_date: p.payment_date || header.issue_date || todayISO(),
     method: p.method as PaymentRow["method"],
     amount: "",
     card_kind: (p.card_kind || "") as PaymentRow["card_kind"],
@@ -3484,7 +3095,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
       if (usedPayments.length > 0) {
         const paymentRows = usedPayments.map((p) => ({
           company_id: companyId,
-          payment_date: header.issue_date,
+          payment_date: p.payment_date || header.issue_date,
           currency_code: header.currency_code || baseCurrency,
           method: p.method,
           reference: p.reference || null,
@@ -3790,6 +3401,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
                 allocated_amount,
                 payments (
                   id,
+                  payment_date,
                   method,
                   reference,
                   card_kind,
@@ -3809,6 +3421,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
 
               return {
                 id: String(p?.id || uid()),
+                payment_date: String(p?.payment_date || (h as any).issue_date || todayISO()),
                 method: (p?.method || "TRANSFERENCIA") as PaymentRow["method"],
                 amount: r.allocated_amount != null
                   ? String(r.allocated_amount)
@@ -3823,7 +3436,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
             if (parsedPayments.length === 0) {
               const { data: payFallback, error: payFallbackError } = await supabase
                 .from("payments")
-                .select("id,method,reference,card_kind,card_last4,auth_code,total_amount,extra")
+                .select("id,payment_date,method,reference,card_kind,card_last4,auth_code,total_amount,extra")
                 .eq("company_id", companyId);
 
               if (payFallbackError) throw payFallbackError;
@@ -3832,6 +3445,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
                 .filter((p: any) => p?.extra?.trade_doc_id === draftId)
                 .map((p: any) => ({
                   id: String(p.id || uid()),
+                  payment_date: String(p.payment_date || (h as any).issue_date || todayISO()),
                   method: (p.method || "TRANSFERENCIA") as PaymentRow["method"],
                   amount: String(p.total_amount ?? ""),
                   card_kind: (p.card_kind || "") as PaymentRow["card_kind"],
@@ -4177,6 +3791,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
           allocated_amount,
           payments (
             id,
+            payment_date,
             method,
             reference,
             card_kind,
@@ -4196,6 +3811,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
 
         return {
           id: String(p?.id || uid()),
+          payment_date: String(p?.payment_date || header.issue_date || todayISO()),
           method: (p?.method || "TRANSFERENCIA") as PaymentRow["method"],
           amount: r.allocated_amount != null
             ? String(r.allocated_amount)
@@ -4210,7 +3826,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
       if (parsedPayments.length === 0) {
         const { data: payFallback, error: payFallbackError } = await supabase
           .from("payments")
-          .select("id,method,reference,card_kind,card_last4,auth_code,total_amount,extra")
+          .select("id,payment_date,method,reference,card_kind,card_last4,auth_code,total_amount,extra")
           .eq("company_id", companyId);
 
         if (payFallbackError) throw payFallbackError;
@@ -4219,6 +3835,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
           .filter((p: any) => p?.extra?.trade_doc_id === tradeDocId)
           .map((p: any) => ({
             id: String(p.id || uid()),
+            payment_date: String(p.payment_date || (row as any).issue_date || todayISO()),
             method: (p.method || "TRANSFERENCIA") as PaymentRow["method"],
             amount: String(p.total_amount ?? ""),
             card_kind: (p.card_kind || "") as PaymentRow["card_kind"],

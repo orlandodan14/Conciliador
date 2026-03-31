@@ -1,193 +1,25 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-
-/** Helper local */
-function cls(...a: Array<string | false | null | undefined>) {
-  return a.filter(Boolean).join(" ");
-}
-
-function toNum(v: any) {
-  const s = String(v ?? "").trim().replace(",", ".");
-  if (!s) return 0;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : 0;
-}
-
-type DocType = "INVOICE" | "CREDIT_NOTE" | "DEBIT_NOTE";
-type DocStatus = "BORRADOR" | "VIGENTE" | "CANCELADO";
-
-export type DocHeader = {
-  doc_type: DocType;
-  fiscal_doc_code: string;
-
-  status: DocStatus;
-
-  issue_date: string;
-  due_date: string;
-
-  series: string;
-  number: string;
-
-  currency_code: string;
-  branch_id: string;
-
-  counterparty_identifier: string;
-  counterparty_name: string;
-
-  reference: string;
-
-  cancelled_at: string;
-  cancel_reason: string;
-
-  origin_doc_id: string | null;
-  origin_label: string;
-
-  origin_doc_type?: DocType | null;
-  origin_fiscal_doc_code?: string | null;
-  origin_issue_date?: string | null;
-  origin_currency_code?: string | null;
-  origin_net_taxable?: number | null;
-  origin_net_exempt?: number | null;
-  origin_tax_total?: number | null;
-  origin_grand_total?: number | null;
-  origin_balance?: number | null;
-  origin_payment_status?: "PAGADO" | "PARCIAL" | "PENDIENTE" | null;
-  origin_status?: DocStatus | "PAGADO" | "PARCIAL" | "PENDIENTE" | null;
-};
-
-export type FiscalDocTypeLite = {
-  id: string;
-  code: string;
-  name: string;
-  scope: "VENTA" | "COMPRA" | "AMBOS";
-  is_active: boolean;
-};
-
-export type FiscalDocSettingsLite = {
-  enabled: boolean;
-  require_sales: boolean;
-  default_sales_doc_type_id: string | null;
-
-  default_sales_invoice_doc_type_id: string | null;
-  default_sales_debit_note_doc_type_id: string | null;
-  default_sales_credit_note_doc_type_id: string | null;
-};
-
-export type BranchLite = {
-  id: string;
-  code: string;
-  name: string;
-  is_active: boolean;
-  is_default: boolean;
-};
-
-export type ItemLite = {
-  id: string;
-  sku: string;
-  name: string;
-  description?: string | null;
-  price_sale: number;
-  tax_exempt: boolean;
-  is_active: boolean;
-  business_line_id?: string | null;
-};
-
-export type DocLine = {
-  line_no: number;
-  item_id: string | null;
-  sku: string;
-  description: string;
-
-  qty: string;
-  unit_price: string;
-
-  is_taxable: boolean;
-  tax_rate: string;
-
-  ex_override: string;
-  af_override: string;
-  iva_override: string;
-  total_override: string;
-};
-
-export type PaymentRow = {
-  id: string;
-  method: "EFECTIVO" | "TRANSFERENCIA" | "TARJETA" | "CHEQUE" | "OTRO";
-  amount: string;
-
-  card_kind: "" | "DEBITO" | "CREDITO";
-  card_last4: string;
-  auth_code: string;
-
-  reference: string;
-};
-
-export type JournalLine = {
-  line_no: number;
-  account_code: string;
-  description: string;
-  debit: string;
-  credit: string;
-
-  cost_center_id: string | null;
-  business_line_id: string | null;
-  branch_id: string | null;
-
-  cost_center_code: string;
-  business_line_code: string;
-  branch_code: string;
-};
-
-export type OriginDocLite = {
-  id: string;
-  doc_type?: DocType | null;
-  fiscal_doc_code?: string | null;
-  series?: string | null;
-  number?: string | null;
-  issue_date?: string | null;
-
-  counterparty_identifier?: string | null;
-
-  net_taxable?: number | null;
-  net_exempt?: number | null;
-  tax_total?: number | null;
-  grand_total?: number | null;
-  balance?: number | null;
-
-  currency_code?: string | null;
-  payment_status?: "PAGADO" | "PARCIAL" | "PENDIENTE" | null;
-  status?: DocStatus | "PAGADO" | "PARCIAL" | "PENDIENTE" | null;
-};
-
-export type EditorTab = "CABECERA" | "LINEAS" | "PAGOS" | "ASIENTO";
-
-export type Totals = {
-  net_taxable: number;
-  net_exempt: number;
-  tax_total: number;
-  grand_total: number;
-  paid: number;
-  balance: number;
-};
-
-function LabelInline({
-  label,
-  field,
-  className,
-}: {
-  label: string;
-  field: string;
-  className?: string;
-}) {
-  return (
-    <div className={cls("flex items-baseline gap-1 text-xs font-medium text-slate-600", className)}>
-      <span>{label}</span>
-      <span className="text-slate-300">/</span>
-      <span className="text-[11px] font-normal text-slate-500">{field}</span>
-    </div>
-  );
-}
+import type {
+  BranchLite,
+  DocHeader,
+  DocLine,
+  DocType,
+  EditorTab,
+  FiscalDocSettingsLite,
+  FiscalDocTypeLite,
+  ItemLite,
+  JournalLine,
+  PaymentRow,
+  Totals,
+} from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/types";
+import {
+  cls,
+  toNum,
+  getDefaultFiscalDocCodeByDocType,
+} from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/helpers";
+import { LabelInline } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/LabelInline";
 
 
 /** Modal “shell” (solo para este componente) */
@@ -454,35 +286,6 @@ export function TradeDocEditorModal(props: {
     return map;
   }, [fiscalDocTypes]);
 
-  function getDefaultFiscalDocTypeIdByDocType(docType: DocType): string | null {
-    if (docType === "INVOICE") {
-      return (
-        fiscalCfg.default_sales_invoice_doc_type_id ||
-        fiscalCfg.default_sales_doc_type_id ||
-        null
-      );
-    }
-
-    if (docType === "DEBIT_NOTE") {
-      return fiscalCfg.default_sales_debit_note_doc_type_id || null;
-    }
-
-    if (docType === "CREDIT_NOTE") {
-      return fiscalCfg.default_sales_credit_note_doc_type_id || null;
-    }
-
-    return null;
-  }
-
-  function getDefaultFiscalDocCodeByDocType(docType: DocType): string {
-    const defaultId = getDefaultFiscalDocTypeIdByDocType(docType);
-    if (!defaultId) return "";
-
-    const found = fiscalDocTypeById[defaultId];
-    if (!found || !found.is_active) return "";
-
-    return found.code || "";
-  }
 
   useEffect(() => {
     setHeaderBranchInput(headerBranchCode || "");
@@ -494,7 +297,11 @@ export function TradeDocEditorModal(props: {
     if (docId) return; // solo nuevo documento
     if (String(header.fiscal_doc_code || "").trim()) return;
 
-    const defaultCode = getDefaultFiscalDocCodeByDocType(header.doc_type);
+    const defaultCode = getDefaultFiscalDocCodeByDocType(
+      header.doc_type,
+      fiscalCfg,
+      fiscalDocTypes
+    );
     if (!defaultCode) return;
 
     setHeader((h) => {
@@ -1012,7 +819,7 @@ export function TradeDocEditorModal(props: {
                         onChange={(e) => {
                           const v = e.target.value as DocType;
                           const defaultFiscalCode = fiscalCfg.enabled
-                            ? getDefaultFiscalDocCodeByDocType(v)
+                            ? getDefaultFiscalDocCodeByDocType(v, fiscalCfg, fiscalDocTypes)
                             : header.fiscal_doc_code;
 
                           if (v === "CREDIT_NOTE" || v === "DEBIT_NOTE") {
@@ -1777,14 +1584,16 @@ export function TradeDocEditorModal(props: {
             <div className="overflow-hidden">
               <table className="w-full table-fixed border-collapse text-sm">
                 <colgroup>
-                  <col style={{ width: "16%" }} />
-                  <col style={{ width: "34%" }} />
                   <col style={{ width: "14%" }} />
-                  <col style={{ width: "30%" }} />
+                  <col style={{ width: "16%" }} />
+                  <col style={{ width: "36%" }} />
+                  <col style={{ width: "14%" }} />
+                  <col style={{ width: "14%" }} />
                   <col style={{ width: "6%" }} />
                 </colgroup>
                 <thead>
                   <tr>
+                    <th className={headerCell}><b>Fecha pago</b><span className={headerSub}>payment_date</span></th>
                     <th className={headerCell}><b>Método</b><span className={headerSub}>method</span></th>
                     <th className={headerCell}><b>Tarjeta</b><span className={headerSub}>tipo/4/aut</span></th>
                     <th className={cls(headerCell, "text-right")}><b>Monto</b><span className={headerSub}>amount</span></th>
@@ -1798,17 +1607,18 @@ export function TradeDocEditorModal(props: {
             <div className="max-h-[340px] overflow-y-auto overflow-x-hidden">
               <table className="w-full table-fixed border-collapse text-sm">
                 <colgroup>
-                  <col style={{ width: "16%" }} />
-                  <col style={{ width: "34%" }} />
                   <col style={{ width: "14%" }} />
-                  <col style={{ width: "30%" }} />
+                  <col style={{ width: "16%" }} />
+                  <col style={{ width: "36%" }} />
+                  <col style={{ width: "14%" }} />
+                  <col style={{ width: "14%" }} />
                   <col style={{ width: "6%" }} />
                 </colgroup>
 
                 <tbody>
                   {payments.length === 0 ? (
                     <tr>
-                      <td className="p-4 text-sm text-slate-600" colSpan={5}>
+                      <td className="p-4 text-sm text-slate-600" colSpan={6}>
                         <b>Crédito</b> (sin formas de pago registradas).
                         <span className="ml-2 text-slate-500">Usa “+ Forma” si deseas registrar pagos.</span>
                       </td>
@@ -1820,6 +1630,15 @@ export function TradeDocEditorModal(props: {
 
                       return (
                         <tr key={p.id} className={cls(rowBg, "hover:bg-sky-50/30")}>
+                          <td className={bodyCell}>
+                            <input
+                              type="date"
+                              className={cls(cellInputBase, "h-[30px]")}
+                              disabled={!canEdit}
+                              value={p.payment_date || header.issue_date}
+                              onChange={(e) => updatePaymentRow(p.id, { payment_date: e.target.value })}
+                            />
+                          </td>
                           <td className={bodyCell}>
                             <select
                               className={cls(cellInputBase, "h-[30px]")}
