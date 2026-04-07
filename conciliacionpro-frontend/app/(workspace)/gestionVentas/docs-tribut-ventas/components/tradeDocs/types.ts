@@ -187,6 +187,7 @@ export type DraftRow = {
   net_exempt: number | null;
   tax_total: number | null;
   grand_total: number | null;
+  balance?: number | null;
 
   created_at: string | null;
 };
@@ -226,4 +227,22 @@ export type AccountPostingPolicyLite = {
   is_active: boolean;
   effective_from: string;
   effective_to: string | null;
+};
+
+export type TradeDocTimelineRow = {
+  event_date: string | null;
+  event_type: "DOC" | "PAYMENT";
+  related_doc_id: string | null;
+  payment_id: string | null;
+  doc_type: string | null;
+  fiscal_doc_code: string | null;
+  series: string | null;
+  number: string | null;
+  display_folio: string | null;
+  affects_label: string;
+  amount: number | null;
+  impact_sign: number;
+  running_group: string;
+  source_doc_id: string | null;
+  sort_ts: string | null;
 };

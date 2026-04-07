@@ -4,9 +4,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import * as XLSX from "xlsx";
 import { CounterpartyCreateModal, Counterparty as CPCounterparty } from "@/app/(workspace)/components/counterparties/CounterpartyCreateModal";
-import { Pencil, CheckCircle2, Trash2 } from "lucide-react";
 import { TradeDocEditorModal } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocEditorModal";
 import { OriginDocSearchModal } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/OriginDocSearchModal";
+import TradeDocsTable from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocsTable";
 import type {
   AccountDefaultRow,
   AccountNodeLite,
@@ -16,7 +16,6 @@ import type {
   DocHeader,
   DocLine,
   DocType,
-  DocStatus,
   DraftRow,
   EditorTab,
   FiscalDocSettingsLite,
@@ -26,6 +25,7 @@ import type {
   OriginDocLite,
   OriginSearchFilters,
   PaymentRow,
+  TradeDocTimelineRow,
 } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/types";
 import {
   cls,
@@ -36,7 +36,6 @@ import {
   folioLabel,
   normalizeFolioPart,
   hasFiscalFolioData,
-  getJournalDocTypeLabel,
   isReverseNoteDocType,
   buildJournalDescriptionFromHeader,
   ellipsis,
@@ -47,10 +46,8 @@ import {
   makeJournalLine,
   makePaymentRow,
   renumber,
-  getDefaultFiscalDocTypeIdByDocType,
   getDefaultFiscalDocCodeByDocType,
 } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/helpers";
-import { LabelInline } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/LabelInline";
 
 /**
  * =========================
@@ -492,6 +489,7 @@ function Modal({
 }) {
   if (!open) return null;
 
+
   return (
     <div className="fixed inset-0 z-50">
       <div className="absolute inset-0 bg-black/45" onClick={onClose} />
@@ -537,12 +535,15 @@ function Modal({
  */
 
 
+
+
 /**
  * =========================
  * Page
  * =========================
  */
 export default function Page() {
+  const [activeTab, setActiveTab] = useState<"drafts" | "registered">("drafts");
   const [companyId, setCompanyId] = useState<string>("");
   const [role, setRole] = useState<"OWNER" | "EDITOR" | "LECTOR" | null>(null);
   const canEdit = role === "OWNER" || role === "EDITOR";
@@ -714,29 +715,184 @@ export default function Page() {
   // Drafts list
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [loadingDrafts, setLoadingDrafts] = useState(false);
+  const [registeredDocs, setRegisteredDocs] = useState<DraftRow[]>([]);
+  const [loadingRegisteredDocs, setLoadingRegisteredDocs] = useState(false);
+  const PAGE_SIZE = 100;
+
+  const [draftsOffset, setDraftsOffset] = useState(0);
+  const [draftsHasMore, setDraftsHasMore] = useState(true);
+  const [loadingMoreDrafts, setLoadingMoreDrafts] = useState(false);
+
+  const [registeredOffset, setRegisteredOffset] = useState(0);
+  const [registeredHasMore, setRegisteredHasMore] = useState(true);
+  const [loadingMoreRegistered, setLoadingMoreRegistered] = useState(false);
+  
+  
+  const [timelineByDocId, setTimelineByDocId] = useState<Record<string, TradeDocTimelineRow[]>>({});
+  const [timelineLoadingByDocId, setTimelineLoadingByDocId] = useState<Record<string, boolean>>({});
+
+  function renderTimelineTable(row: DraftRow) {
+    const loading = timelineLoadingByDocId[row.id];
+    const rawItems = timelineByDocId[row.id] || [];
+
+    const items = rawItems.filter((item) => {
+      const isRootDocRow =
+        item.event_type === "DOC" &&
+        item.related_doc_id === row.id;
+
+      return !isRootDocRow;
+    });
+
+    if (loading) {
+      return <div className="text-[12px] text-slate-500">Cargando trazabilidad...</div>;
+    }
+
+    if (!items.length) {
+      return <div className="text-[12px] text-slate-500">No hay movimientos relacionados.</div>;
+    }
+
+    return (
+      <div className="overflow-hidden rounded-2xl ring-1 ring-slate-200/70">
+        <div className="grid grid-cols-[100px_120px_170px_1fr_120px] bg-gradient-to-b from-slate-100 to-slate-50 text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#0b2b4f]">
+          <div className="px-3 py-2 border-r border-slate-200">Fecha</div>
+          <div className="px-3 py-2 border-r border-slate-200">Tipo</div>
+          <div className="px-3 py-2 border-r border-slate-200">Documento</div>
+          <div className="px-3 py-2 border-r border-slate-200">Cómo afecta</div>
+          <div className="px-3 py-2 text-right">Monto</div>
+        </div>
+
+        {items.map((item, idx) => {
+          const negative = Number(item.impact_sign || 0) < 0;
+          const amountText = `${negative ? "-" : "+"} ${formatNumber(Number(item.amount || 0), moneyDecimals)}`;
+
+          const typeLabel =
+            item.event_type === "PAYMENT"
+              ? "Pago"
+              : item.doc_type === "CREDIT_NOTE"
+              ? "Nota crédito"
+              : item.doc_type === "DEBIT_NOTE"
+              ? "Nota débito"
+              : "Documento";
+
+          const docLabel =
+            item.event_type === "PAYMENT"
+              ? "Pago aplicado"
+              : item.fiscal_doc_code
+              ? `${item.fiscal_doc_code} · ${item.display_folio || item.number || "—"}`
+              : item.display_folio || item.number || "—";
+
+          const affectsLabel =
+            item.affects_label || "—";
+
+          return (
+            <div
+              key={`${item.event_type}-${item.related_doc_id || ""}-${item.payment_id || ""}-${idx}`}
+              className={cls(
+                "grid grid-cols-[100px_120px_170px_1fr_120px] text-[12px]",
+                idx % 2 === 0 ? "bg-white" : "bg-slate-50/70"
+              )}
+            >
+              <div className="px-3 py-2 border-t border-r border-slate-200/70 whitespace-nowrap">
+                {item.event_date || "—"}
+              </div>
+
+              <div className="px-3 py-2 border-t border-r border-slate-200/70 whitespace-nowrap">
+                <span className="font-semibold text-slate-800">{typeLabel}</span>
+              </div>
+
+              <div
+                className="px-3 py-2 border-t border-r border-slate-200/70 truncate whitespace-nowrap font-medium text-slate-900"
+                title={docLabel}
+              >
+                {docLabel}
+              </div>
+
+              <div
+                className="px-3 py-2 border-t border-r border-slate-200/70 truncate whitespace-nowrap text-slate-700"
+                title={affectsLabel}
+              >
+                {affectsLabel}
+              </div>
+
+              <div
+                className={cls(
+                  "px-3 py-2 border-t border-slate-200/70 text-right font-extrabold whitespace-nowrap",
+                  negative ? "text-rose-700" : "text-emerald-700"
+                )}
+              >
+                {amountText}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
 
   // ✅ Selección borradores
   const [selectedDrafts, setSelectedDrafts] = useState<Record<string, boolean>>({});
-  const selectedIds = useMemo(() => Object.keys(selectedDrafts).filter((id) => selectedDrafts[id]), [selectedDrafts]);
-  const allSelected = useMemo(
-    () => drafts.length > 0 && selectedIds.length === drafts.length,
-    [drafts.length, selectedIds.length]
+  const [selectedRegistered, setSelectedRegistered] = useState<Record<string, boolean>>({});
+
+  const selectedDraftIds = useMemo(
+    () => Object.keys(selectedDrafts).filter((id) => selectedDrafts[id]),
+    [selectedDrafts]
+  );
+
+  const selectedRegisteredIds = useMemo(
+    () => Object.keys(selectedRegistered).filter((id) => selectedRegistered[id]),
+    [selectedRegistered]
+  );
+
+  const allDraftsSelected = useMemo(
+    () => drafts.length > 0 && selectedDraftIds.length === drafts.length,
+    [drafts.length, selectedDraftIds.length]
+  );
+
+  const allRegisteredSelected = useMemo(
+    () => registeredDocs.length > 0 && selectedRegisteredIds.length === registeredDocs.length,
+    [registeredDocs.length, selectedRegisteredIds.length]
   );
 
   function toggleDraft(id: string, v?: boolean) {
     setSelectedDrafts((p) => ({ ...p, [id]: v ?? !p[id] }));
   }
-  function clearSelection() {
+
+  function toggleRegistered(id: string, v?: boolean) {
+    setSelectedRegistered((p) => ({ ...p, [id]: v ?? !p[id] }));
+  }
+
+  function clearDraftSelection() {
     setSelectedDrafts({});
   }
+
+  function clearRegisteredSelection() {
+    setSelectedRegistered({});
+  }
+
   function selectAllDrafts() {
     const next: Record<string, boolean> = {};
-    drafts.forEach((d) => (next[d.id] = true));
+    drafts.forEach((d) => {
+      next[d.id] = true;
+    });
     setSelectedDrafts(next);
   }
-  function toggleSelectAll() {
-    if (allSelected) clearSelection();
+
+  function selectAllRegistered() {
+    const next: Record<string, boolean> = {};
+    registeredDocs.forEach((d) => {
+      next[d.id] = true;
+    });
+    setSelectedRegistered(next);
+  }
+
+  function toggleSelectAllDrafts() {
+    if (allDraftsSelected) clearDraftSelection();
     else selectAllDrafts();
+  }
+
+  function toggleSelectAllRegistered() {
+    if (allRegisteredSelected) clearRegisteredSelection();
+    else selectAllRegistered();
   }
 
   function finishBulkRegisterProgress() {
@@ -1221,10 +1377,6 @@ export default function Page() {
       }
     }
 
-    console.log("POLICIES RAW", accountPostingPolicies);
-    console.log("ACCOUNTS BY ID", accById);
-    console.log("POLICY MAP BY CODE", byCode);
-
     setPostingPolicyByAccountCode(byCode);
   }, [accountPostingPolicies, accById]);
 
@@ -1620,7 +1772,6 @@ export default function Page() {
 
     // si no hay policy, no tocar dimensiones
     if (!policy) {
-      console.log("SIN POLICY PARA CUENTA", accountCode, postingPolicyByAccountCode);
       return next;
     }
 
@@ -1656,16 +1807,6 @@ export default function Page() {
       next.cost_center_id = null;
       next.cost_center_code = "";
     }
-
-    console.log("normalizeLineDimensionsByPolicy", {
-      accountCode,
-      policy,
-      header_branch_id: header.branch_id,
-      docBranch,
-      result_branch_id: next.branch_id,
-      result_branch_code: next.branch_code,
-    });
-
     return next;
   }
 
@@ -1915,13 +2056,6 @@ export default function Page() {
         error: `Asiento no cuadra: Debe ${debe} ≠ Haber ${haber}`,
       };
     }
-
-    console.log("BUILD JOURNAL RAW", next);
-    console.log("HEADER BRANCH DEBUG", {
-      header_branch_id: header.branch_id,
-      docBranch: header.branch_id ? branchById[header.branch_id] : null,
-    });
-
     return {
       lines: next.map((x, i) => ({ ...x, line_no: i + 1 })),
     };
@@ -2245,6 +2379,7 @@ export default function Page() {
           net_exempt,
           tax_total,
           grand_total,
+          balance,
           currency_code,
           status,
           counterparty_id,
@@ -2304,7 +2439,7 @@ export default function Page() {
           net_exempt: Number(r.net_exempt || 0),
           tax_total: Number(r.tax_total || 0),
           grand_total: total,
-          balance: total, // luego conectamos saldo real si lo guardas aparte
+          balance: Number(r.balance ?? total),
           currency_code: r.currency_code,
           status: r.status,
         };
@@ -2713,13 +2848,49 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
     }
   }
 
+  async function loadTimeline(docId: string) {
+    if (!companyId) return;
+    if (timelineByDocId[docId] || timelineLoadingByDocId[docId]) return;
+
+    setTimelineLoadingByDocId((prev) => ({ ...prev, [docId]: true }));
+
+    try {
+      const { data, error } = await supabase.rpc("get_trade_doc_timeline", {
+        p_company_id: companyId,
+        p_trade_doc_id: docId,
+      });
+
+      if (error) throw error;
+
+      setTimelineByDocId((prev) => ({
+        ...prev,
+        [docId]: ((data as any[]) || []) as TradeDocTimelineRow[],
+      }));
+    } catch (e) {
+      console.error("Error cargando timeline", e);
+      setTimelineByDocId((prev) => ({ ...prev, [docId]: [] }));
+    } finally {
+      setTimelineLoadingByDocId((prev) => ({ ...prev, [docId]: false }));
+    }
+  }
+
   /**
    * Drafts load (vista principal)
    */
-  async function loadDrafts() {
+  async function loadDrafts(reset = true) {
     if (!companyId) return;
-    setLoadingDrafts(true);
+
+    if (reset) {
+      setLoadingDrafts(true);
+    } else {
+      if (loadingMoreDrafts || !draftsHasMore) return;
+      setLoadingMoreDrafts(true);
+    }
+
     try {
+      const from = reset ? 0 : draftsOffset;
+      const to = from + PAGE_SIZE - 1;
+
       const { data, error } = await supabase
         .from("trade_docs")
         .select(
@@ -2738,29 +2909,167 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
             "net_exempt",
             "tax_total",
             "grand_total",
+            "balance",
             "created_at",
           ].join(",")
         )
         .eq("company_id", companyId)
         .eq("status", "BORRADOR")
         .order("issue_date", { ascending: false })
-        .limit(200);
+        .order("created_at", { ascending: false })
+        .range(from, to);
 
       if (error) throw error;
-      setDrafts(((data as any) || []) as DraftRow[]);
+
+      const rows = ((data as any) || []) as DraftRow[];
+
+      if (reset) {
+        setDrafts(rows);
+      } else {
+        setDrafts((prev) => [...prev, ...rows]);
+      }
+
+      setDraftsOffset(from + rows.length);
+      setDraftsHasMore(rows.length === PAGE_SIZE);
     } catch (e: any) {
-      setDrafts([]);
-      setMessages((prev) => [{ level: "error", text: e?.message || "No se pudieron cargar borradores." }, ...prev]);
+      if (reset) setDrafts([]);
+      setMessages((prev) => [
+        { level: "error", text: e?.message || "No se pudieron cargar borradores." },
+        ...prev,
+      ]);
     } finally {
       setLoadingDrafts(false);
+      setLoadingMoreDrafts(false);
+    }
+  }
+
+  async function loadRegisteredDocs(reset = true) {
+    if (!companyId) return;
+
+    if (reset) {
+      setLoadingRegisteredDocs(true);
+    } else {
+      if (loadingMoreRegistered || !registeredHasMore) return;
+      setLoadingMoreRegistered(true);
+    }
+
+    try {
+      const from = reset ? 0 : registeredOffset;
+      const to = from + PAGE_SIZE - 1;
+
+      const { data, error } = await supabase
+        .from("trade_docs")
+        .select(
+          [
+            "id",
+            "company_id",
+            "doc_type",
+            "status",
+            "issue_date",
+            "series",
+            "number",
+            "counterparty_identifier_snapshot",
+            "counterparty_name_snapshot",
+            "fiscal_doc_code",
+            "net_taxable",
+            "net_exempt",
+            "tax_total",
+            "grand_total",
+            "balance",
+            "created_at",
+          ].join(",")
+        )
+        .eq("company_id", companyId)
+        .in("status", ["VIGENTE", "CANCELADO"])
+        .order("issue_date", { ascending: false })
+        .order("created_at", { ascending: false })
+        .range(from, to);
+
+      if (error) throw error;
+
+      const rows = ((data as any) || []) as DraftRow[];
+
+      if (reset) {
+        setRegisteredDocs(rows);
+      } else {
+        setRegisteredDocs((prev) => [...prev, ...rows]);
+      }
+
+      setRegisteredOffset(from + rows.length);
+      setRegisteredHasMore(rows.length === PAGE_SIZE);
+    } catch (e: any) {
+      if (reset) setRegisteredDocs([]);
+      setMessages((prev) => [
+        { level: "error", text: e?.message || "No se pudieron cargar registrados." },
+        ...prev,
+      ]);
+    } finally {
+      setLoadingRegisteredDocs(false);
+      setLoadingMoreRegistered(false);
     }
   }
 
   useEffect(() => {
     if (!companyId) return;
-    loadDrafts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
+    setDraftsOffset(0);
+    setDraftsHasMore(true);
+    setRegisteredOffset(0);
+    setRegisteredHasMore(true);
+
+    void loadDrafts(true);
+    void loadRegisteredDocs(true);
   }, [companyId]);
+
+  useEffect(() => {
+    function onWindowScroll() {
+      const usingPageScrollForDrafts =
+        activeTab === "drafts" && drafts.length <= PAGE_SIZE;
+      const usingPageScrollForRegistered =
+        activeTab === "registered" && registeredDocs.length <= PAGE_SIZE;
+
+      if (!usingPageScrollForDrafts && !usingPageScrollForRegistered) return;
+
+      const scrollTop = window.scrollY || document.documentElement.scrollTop;
+      const viewport = window.innerHeight;
+      const fullHeight = document.documentElement.scrollHeight;
+
+      const nearBottom = scrollTop + viewport >= fullHeight - 220;
+      if (!nearBottom) return;
+
+      if (
+        usingPageScrollForDrafts &&
+        draftsHasMore &&
+        !loadingDrafts &&
+        !loadingMoreDrafts
+      ) {
+        void loadDrafts(false);
+      }
+
+      if (
+        usingPageScrollForRegistered &&
+        registeredHasMore &&
+        !loadingRegisteredDocs &&
+        !loadingMoreRegistered
+      ) {
+        void loadRegisteredDocs(false);
+      }
+    }
+
+    window.addEventListener("scroll", onWindowScroll);
+    return () => window.removeEventListener("scroll", onWindowScroll);
+  }, [
+    activeTab,
+    drafts.length,
+    registeredDocs.length,
+    draftsHasMore,
+    registeredHasMore,
+    loadingDrafts,
+    loadingRegisteredDocs,
+    loadingMoreDrafts,
+    loadingMoreRegistered,
+  ]);
+
 
   useEffect(() => {
     if (!bulkRegistering && !draftSaving && !draftDeleting) return;
@@ -2781,6 +3090,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
 
     return () => window.clearInterval(timer);
   }, [bulkRegistering, draftSaving, draftDeleting]);
+
   /**
    * Save / status
    */
@@ -3244,7 +3554,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
       const result = await registerTradeDocsViaBulk([finalDocId]);
 
       await loadDrafts();
-      clearSelection();
+      clearDraftSelection();
       clearForm();
 
       finishBulkRegisterProgress();
@@ -3717,7 +4027,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
       }
 
       if (clearSelectionOnSuccess) {
-        clearSelection();
+        clearDraftSelection();
       }
 
       await loadDrafts();
@@ -4180,6 +4490,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
       setMessages([{ level: "warn", text: `Carga masiva OK: ${payload.length} borradores creados.` }]);
       closeImport();
       await loadDrafts();
+      await loadRegisteredDocs();
     } catch (e: any) {
       setMessages([{ level: "error", text: e?.message || "No se pudo importar." }]);
     } finally {
@@ -4189,10 +4500,10 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
 
   async function bulkRegisterSelected() {
     if (!canEdit || !companyId) return;
-    if (selectedIds.length === 0) return;
+    if (selectedDraftIds.length === 0) return;
 
     const ok = confirm(
-      `¿Registrar ${selectedIds.length} borrador(es) como VIGENTE y contabilizarlos masivamente?`
+      `¿Registrar ${selectedDraftIds.length} borrador(es) como VIGENTE y contabilizarlos masivamente?`
     );
     if (!ok) return;
 
@@ -4203,7 +4514,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
 
       const { data, error } = await supabase.rpc("bulk_register_trade_docs", {
         _company_id: companyId,
-        _trade_doc_ids: selectedIds,
+        _trade_doc_ids: selectedDraftIds,
       });
 
       if (error) throw error;
@@ -4212,8 +4523,9 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
       const errorCount = Number((data as any)?.error_count || 0);
       const errors = Array.isArray((data as any)?.errors) ? (data as any).errors : [];
 
-      clearSelection();
+      clearDraftSelection();
       await loadDrafts();
+      await loadRegisteredDocs();
       finishBulkRegisterProgress();
 
       if (errorCount === 0) {
@@ -4244,6 +4556,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
       ]);
       finishBulkRegisterProgress();
       await loadDrafts();
+      await loadRegisteredDocs();
     } finally {
       setBulkRegistering(false);
     }
@@ -4251,20 +4564,20 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
 
   async function bulkDeleteSelected() {
     if (!canEdit || !companyId) return;
-    if (selectedIds.length === 0) return;
+    if (selectedDraftIds.length === 0) return;
 
-    const ok = confirm(`¿Eliminar ${selectedIds.length} borrador(es)? No se puede deshacer.`);
+    const ok = confirm(`¿Eliminar ${selectedDraftIds.length} borrador(es)? No se puede deshacer.`);
     if (!ok) return;
 
     await deleteDraftsWithProgress({
-      ids: selectedIds,
+      ids: selectedDraftIds,
       messageScope: "page",
       closeEditorOnSuccess: false,
       clearSelectionOnSuccess: true,
       successText:
-        selectedIds.length === 1
+        selectedDraftIds.length === 1
           ? "Borrador eliminado."
-          : `Se eliminaron ${selectedIds.length} borrador(es).`,
+          : `Se eliminaron ${selectedDraftIds.length} borrador(es).`,
     });
   }
 
@@ -4362,7 +4675,21 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <button type="button" className={theme.btnGlass} onClick={loadDrafts}>
+              <button
+                type="button"
+                className={theme.btnGlass}
+                onClick={() => {
+                  if (activeTab === "drafts") {
+                    setDraftsOffset(0);
+                    setDraftsHasMore(true);
+                    void loadDrafts(true);
+                  } else {
+                    setRegisteredOffset(0);
+                    setRegisteredHasMore(true);
+                    void loadRegisteredDocs(true);
+                  }
+                }}
+              >
                 {loadingDrafts ? "Cargando..." : "Refrescar"}
               </button>
 
@@ -4421,268 +4748,214 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
 
         <div className="p-7">
           <div className={theme.card}>
-            <div className="px-4 py-3 border-b flex flex-wrap items-start justify-between gap-2">
-              <div>
-                <h2 className="font-semibold text-slate-900">Borradores</h2>
-                <div className="text-[11px] text-slate-500">Sin scroll horizontal: columnas ajustadas.</div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <button type="button" className={theme.btnSoft} onClick={loadDrafts}>
-                  {loadingDrafts ? "Cargando..." : "Refrescar"}
-                </button>
-
-                {drafts.length ? (
-                  <>
-                    <button type="button" className={theme.btnSoft} onClick={toggleSelectAll} disabled={!canEdit}>
-                      {allSelected ? "Quitar selección" : "Seleccionar todo"}
-                    </button>
-
-                    <button type="button" className={theme.btnSoft} onClick={clearSelection}>
-                      Limpiar
-                    </button>
-
+            <div className="border-b px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
+                      onClick={() => setActiveTab("drafts")}
                       className={cls(
-                        theme.btnPrimary,
-                        (!canEdit || selectedIds.length === 0 || bulkRegistering) && "opacity-60 cursor-not-allowed"
+                        "rounded-xl px-3 py-2 text-sm font-bold transition",
+                        activeTab === "drafts"
+                          ? "bg-[#123b63] text-white shadow"
+                          : "bg-slate-100 text-slate-700 hover:bg-slate-200"
                       )}
-                      disabled={!canEdit || selectedIds.length === 0 || bulkRegistering}
-                      onClick={bulkRegisterSelected}
-                      title="Registrar seleccionados"
                     >
-                      {bulkRegistering ? "Registrando..." : `Registrar (${selectedIds.length})`}
+                      Borradores
                     </button>
 
                     <button
                       type="button"
-                      className={cls(theme.btnSoft, (!canEdit || selectedIds.length === 0) && "opacity-60 cursor-not-allowed")}
-                      disabled={!canEdit || selectedIds.length === 0}
-                      onClick={bulkDeleteSelected}
-                      title="Eliminar seleccionados"
+                      onClick={() => setActiveTab("registered")}
+                      className={cls(
+                        "rounded-xl px-3 py-2 text-sm font-bold transition",
+                        activeTab === "registered"
+                          ? "bg-[#123b63] text-white shadow"
+                          : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                      )}
                     >
-                      Eliminar ({selectedIds.length})
+                      Registrados
                     </button>
-                  </>
-                ) : null}
+                  </div>
+
+                  <div className="mt-2 text-[11px] text-slate-500">
+                    {activeTab === "drafts"
+                      ? "Documentos en borrador pendientes de registrar."
+                      : "Documentos ya registrados o cancelados."}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className={theme.btnSoft}
+                    onClick={() => {
+                      if (activeTab === "drafts") {
+                        setDraftsOffset(0);
+                        setDraftsHasMore(true);
+                        void loadDrafts(true);
+                      } else {
+                        setRegisteredOffset(0);
+                        setRegisteredHasMore(true);
+                        void loadRegisteredDocs(true);
+                      }
+                    }}
+                  >
+                    {activeTab === "drafts"
+                      ? loadingDrafts
+                        ? "Cargando..."
+                        : "Refrescar"
+                      : loadingRegisteredDocs
+                      ? "Cargando..."
+                      : "Refrescar"}
+                  </button>
+
+                  {activeTab === "drafts" && drafts.length ? (
+                    <>
+                      <button
+                        type="button"
+                        className={theme.btnSoft}
+                        onClick={toggleSelectAllDrafts}
+                        disabled={!canEdit}
+                      >
+                        {allDraftsSelected ? "Quitar selección" : "Seleccionar todo"}
+                      </button>
+
+                      <button
+                        type="button"
+                        className={theme.btnSoft}
+                        onClick={clearDraftSelection}
+                      >
+                        Limpiar
+                      </button>
+
+                      <button
+                        type="button"
+                        className={cls(
+                          theme.btnPrimary,
+                          (!canEdit || selectedDraftIds.length === 0 || bulkRegistering) &&
+                            "opacity-60 cursor-not-allowed"
+                        )}
+                        disabled={!canEdit || selectedDraftIds.length === 0 || bulkRegistering}
+                        onClick={bulkRegisterSelected}
+                      >
+                        {bulkRegistering ? "Registrando..." : `Registrar (${selectedDraftIds.length})`}
+                      </button>
+
+                      <button
+                        type="button"
+                        className={cls(
+                          theme.btnSoft,
+                          (!canEdit || selectedDraftIds.length === 0) && "opacity-60 cursor-not-allowed"
+                        )}
+                        disabled={!canEdit || selectedDraftIds.length === 0}
+                        onClick={bulkDeleteSelected}
+                      >
+                        Eliminar ({selectedDraftIds.length})
+                      </button>
+                    </>
+                  ) : null}
+                </div>
               </div>
             </div>
 
-            {/* ✅ sin scroll horizontal: usamos % */}
-            <div className="border-t border-slate-200 overflow-x-hidden">
-              <div className="overflow-hidden">
-                <table className="w-full table-fixed border-collapse text-sm">
-                  <colgroup>
-                    <col style={{ width: "4%" }} />
-                    <col style={{ width: "10%" }} />
-                    <col style={{ width: "6%" }} />
-                    <col style={{ width: "12%" }} />
-                    <col style={{ width: "12%" }} />
-                    <col style={{ width: "18%" }} />
-                    <col style={{ width: "9%" }} />
-                    <col style={{ width: "9%" }} />
-                    <col style={{ width: "9%" }} />
-                    <col style={{ width: "9%" }} />
-                    <col style={{ width: "12%" }} />
-                  </colgroup>
-                  <thead>
-                    <tr>
-                      <th className={headerCell}>
-                        <input
-                          type="checkbox"
-                          checked={allSelected}
-                          onChange={toggleSelectAll}
-                          disabled={!canEdit || drafts.length === 0}
-                          title="Seleccionar todo"
-                        />
-                      </th>
-                      <th className={headerCell}><b>Emisión</b><span className={headerSub}>issue_date</span></th>
-                      <th className={headerCell}><b>Cód</b><span className={headerSub}>fiscal</span></th>
-                      <th className={headerCell}><b>Folio</b><span className={headerSub}>serie/n°</span></th>
-                      <th className={headerCell}><b>RUT/NIC</b><span className={headerSub}>titular</span></th>
-                      <th className={headerCell}><b>Nombre Contraparte</b><span className={headerSub}>titular</span></th>
-                      <th className={cls(headerCell, "text-right")}><b>Afecto</b><span className={headerSub}>net</span></th>
-                      <th className={cls(headerCell, "text-right")}><b>Exento</b><span className={headerSub}>ex</span></th>
-                      <th className={cls(headerCell, "text-right")}><b>IVA</b><span className={headerSub}>iva</span></th>
-                      <th className={cls(headerCell, "text-right")}><b>Total</b><span className={headerSub}>total</span></th>
-                      <th className={cls(headerCell, "text-right")}><span className={headerSub}>acciones</span></th>
-                    </tr>
-                  </thead>
-                </table>
-              </div>
+            <div className="p-4">
+              {activeTab === "drafts" ? (
+                <TradeDocsTable
+                  rows={drafts}
+                  loading={loadingDrafts}
+                  moneyDecimals={moneyDecimals}
+                  canEdit={canEdit}
+                  baseCurrency={baseCurrency}
+                  companyId={companyId}
+                  tabKey="drafts"
+                  selectedMap={selectedDrafts}
+                  allSelected={allDraftsSelected}
+                  onToggleSelectAll={toggleSelectAllDrafts}
+                  onToggleRow={toggleDraft}
+                  onOpenRow={openDraft}
+                  onExpandRow={(row) => {
+                    void loadTimeline(row.id);
+                  }}
+                  useInternalScroll={drafts.length > PAGE_SIZE}
+                  hasMore={draftsHasMore}
+                  loadingMore={loadingMoreDrafts}
+                  onReachEnd={() => {
+                    if (drafts.length > PAGE_SIZE) {
+                      void loadDrafts(false);
+                    }
+                  }}
+                  onDeleteRow={(id) => {
+                    void deleteDraft(id);
+                  }}
+                  onRegisterRow={async (row) => {
+                    try {
+                      setMessages([]);
+                      setProgressMode("REGISTER");
+                      setBulkRegistering(true);
 
-              <div className="max-h-[520px] overflow-y-auto overflow-x-hidden">
-                <table className="w-full table-fixed border-collapse text-sm">
-                  <colgroup>
-                    <col style={{ width: "4%" }} />
-                    <col style={{ width: "10%" }} />
-                    <col style={{ width: "6%" }} />
-                    <col style={{ width: "12%" }} />
-                    <col style={{ width: "12%" }} />
-                    <col style={{ width: "18%" }} />
-                    <col style={{ width: "9%" }} />
-                    <col style={{ width: "9%" }} />
-                    <col style={{ width: "9%" }} />
-                    <col style={{ width: "9%" }} />
-                    <col style={{ width: "12%" }} />
-                  </colgroup>
+                      const result = await registerTradeDocsViaBulk([row.id]);
 
-                  <tbody>
-                    {drafts.length === 0 ? (
-                      <tr>
-                        <td className="p-4 text-sm text-slate-600" colSpan={11}>
-                          No hay borradores.
-                        </td>
-                      </tr>
-                    ) : (
-                      drafts.map((d, idx) => {
-                        const rowBg = idx % 2 === 0 ? "bg-slate-50/80" : "bg-slate-100/50";
-                        const checked = Boolean(selectedDrafts[d.id]);
-                        return (
-                          <tr key={d.id} className={cls(rowBg, "hover:bg-sky-50/30")}>
-                            <td className={cls(bodyCell, "text-center")}>
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                disabled={!canEdit}
-                                onChange={(e) => toggleDraft(d.id, e.target.checked)}
-                                title="Seleccionar"
-                              />
-                            </td>
+                      clearDraftSelection();
+                      await loadDrafts();
+                      await loadRegisteredDocs();
+                      finishBulkRegisterProgress();
 
-                            <td className={cls(bodyCell, "text-xs")}>{d.issue_date || "—"}</td>
-                            <td className={cls(bodyCell, "font-semibold")}>{d.fiscal_doc_code || "—"}</td>
-                            <td className={bodyCell}>
-                              <div className="truncate" title={folioLabel(d.series, d.number)}>
-                                {folioLabel(d.series, d.number)}
-                              </div>
-                            </td>
-                            <td className={cls(bodyCell, "truncate")} title={d.counterparty_identifier_snapshot || ""}>
-                              {d.counterparty_identifier_snapshot || "—"}
-                            </td>
-                            <td className={bodyCell} title={d.counterparty_name_snapshot || ""}>
-                              {ellipsis(d.counterparty_name_snapshot || "—", 28)}
-                            </td>
-                            <td className={cls(bodyCell, "text-right")}>{formatNumber(Number(d.net_taxable || 0), moneyDecimals)}</td>
-                            <td className={cls(bodyCell, "text-right")}>{formatNumber(Number(d.net_exempt || 0), moneyDecimals)}</td>
-                            <td className={cls(bodyCell, "text-right")}>{formatNumber(Number(d.tax_total || 0), moneyDecimals)}</td>
-                            <td className={cls(bodyCell, "text-right")}>{formatNumber(Number(d.grand_total || 0), moneyDecimals)}</td>
-                            <td className={cls(bodyCell, "text-right")}>
-                              <div className="flex justify-end gap-1">
-                                {/* Editar */}
-                                <button
-                                  type="button"
-                                  className={iconBtn}
-                                  onClick={() => openDraft(d.id)}
-                                  title="Editar"
-                                  aria-label="Editar"
-                                >
-                                  <Pencil className="h-4 w-4" />
-                                </button>
+                      if (result.errorCount > 0) {
+                        const firstError =
+                          result.errors?.[0]?.message || "No se pudo registrar.";
+                        setMessages([{ level: "error", text: firstError }]);
+                        return;
+                      }
 
-                                {/* Registrar */}
-                                <button
-                                  type="button"
-                                  className={cls(iconBtnPrimary, !canEdit && "opacity-60 cursor-not-allowed")}
-                                  disabled={!canEdit}
-                                  onClick={async () => {
-                                    try {
-                                      setMessages([]);
-                                      setProgressMode("REGISTER");
-                                      setBulkRegistering(true);
-
-                                      const draftHeaderForCheck: DocHeader = {
-                                        doc_type: d.doc_type,
-                                        fiscal_doc_code: String(d.fiscal_doc_code || ""),
-                                        status: d.status,
-                                        issue_date: d.issue_date || todayISO(),
-                                        due_date: d.issue_date || todayISO(),
-                                        series: String(d.series || ""),
-                                        number: String(d.number || ""),
-                                        currency_code: baseCurrency,
-                                        branch_id: "",
-                                        counterparty_identifier: String(d.counterparty_identifier_snapshot || ""),
-                                        counterparty_name: String(d.counterparty_name_snapshot || ""),
-                                        reference: "",
-                                        cancelled_at: "",
-                                        cancel_reason: "",
-                                        origin_doc_id: null,
-                                        origin_label: "",
-                                        origin_doc_type: null,
-                                        origin_fiscal_doc_code: null,
-                                        origin_issue_date: null,
-                                        origin_currency_code: null,
-                                        origin_net_taxable: null,
-                                        origin_net_exempt: null,
-                                        origin_tax_total: null,
-                                        origin_grand_total: null,
-                                        origin_balance: null,
-                                        origin_payment_status: null,
-                                        origin_status: null,
-                                      };
-
-                                      if (hasFiscalFolioData(draftHeaderForCheck)) {
-                                        await assertUniqueFiscalFolio({
-                                          companyId,
-                                          header: draftHeaderForCheck,
-                                          excludeDocId: d.id,
-                                        });
-                                      }
-
-                                      const result = await registerTradeDocsViaBulk([d.id]);
-
-                                      clearSelection();
-                                      await loadDrafts();
-                                      finishBulkRegisterProgress();
-
-                                      if (result.errorCount > 0) {
-                                        const firstError = result.errors?.[0]?.message || "No se pudo registrar.";
-                                        setMessages([{ level: "error", text: firstError }]);
-                                        return;
-                                      }
-
-                                      setMessages([
-                                        { level: "warn", text: "Documento registrado (VIGENTE) y contabilizado correctamente." },
-                                      ]);
-                                    } catch (e: any) {
-                                      resetBulkRegisterProgressNow();
-                                      setMessages([{ level: "error", text: e?.message || "No se pudo registrar." }]);
-                                      await loadDrafts();
-                                    } finally {
-                                      setBulkRegistering(false);
-                                    }
-                                  }}
-                                  title="Registrar"
-                                  aria-label="Registrar"
-                                >
-                                  <CheckCircle2 className="h-4 w-4" />
-                                </button>
-
-                                {/* Eliminar */}
-                                <button
-                                  type="button"
-                                  className={cls(iconBtnDanger, !canEdit && "opacity-60 cursor-not-allowed")}
-                                  disabled={!canEdit}
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    void deleteDraft(d.id);
-                                  }}
-                                  title="Eliminar"
-                                  aria-label="Eliminar"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                      setMessages([
+                        {
+                          level: "warn",
+                          text: "Documento registrado (VIGENTE) y contabilizado correctamente.",
+                        },
+                      ]);
+                    } catch (e: any) {
+                      resetBulkRegisterProgressNow();
+                      setMessages([{ level: "error", text: e?.message || "No se pudo registrar." }]);
+                      await loadDrafts();
+                      await loadRegisteredDocs();
+                    } finally {
+                      setBulkRegistering(false);
+                    }
+                  }}
+                  assertUniqueFiscalFolio={assertUniqueFiscalFolio}
+                  renderExpandedContent={(row) => renderTimelineTable(row)}
+                />
+              ) : (
+                <TradeDocsTable
+                  rows={registeredDocs}
+                  loading={loadingRegisteredDocs}
+                  moneyDecimals={moneyDecimals}
+                  canEdit={canEdit}
+                  baseCurrency={baseCurrency}
+                  companyId={companyId}
+                  tabKey="registered"
+                  selectedMap={selectedRegistered}
+                  allSelected={allRegisteredSelected}
+                  onToggleSelectAll={toggleSelectAllRegistered}
+                  onToggleRow={toggleRegistered}
+                  onOpenRow={openDraft}
+                  onExpandRow={(row) => {
+                    void loadTimeline(row.id);
+                  }}
+                  useInternalScroll={registeredDocs.length > PAGE_SIZE}
+                  hasMore={registeredHasMore}
+                  loadingMore={loadingMoreRegistered}
+                  onReachEnd={() => {
+                    if (registeredDocs.length > PAGE_SIZE) {
+                      void loadRegisteredDocs(false);
+                    }
+                  }}
+                  assertUniqueFiscalFolio={assertUniqueFiscalFolio}
+                  renderExpandedContent={(row) => renderTimelineTable(row)}
+                />
+              )}
             </div>
           </div>
 
