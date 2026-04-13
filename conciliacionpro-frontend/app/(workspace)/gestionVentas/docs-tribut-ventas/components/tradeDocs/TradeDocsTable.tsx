@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Pencil, CheckCircle2, Trash2 } from "lucide-react";
+import { Pencil, Eye, CheckCircle2, Trash2 } from "lucide-react";
 import type { DraftRow, DocHeader } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/types";
 import {
   cls,
@@ -418,9 +418,24 @@ export default function TradeDocsTable({
                       </TableTd>
 
                       <TableTd right>
-                        <span className="font-semibold text-sky-700">
-                          {formatNumber(Number((row.balance ?? row.grand_total) || 0), moneyDecimals)}
-                        </span>
+                        {(() => {
+                          const balanceValue = Number(row.balance ?? row.grand_total ?? 0);
+
+                          return (
+                            <span
+                              className={cls(
+                                "font-semibold",
+                                balanceValue < 0
+                                  ? "text-rose-700"
+                                  : balanceValue > 0
+                                  ? "text-emerald-700"
+                                  : "text-sky-700"
+                              )}
+                            >
+                              {formatNumber(balanceValue, moneyDecimals)}
+                            </span>
+                          );
+                        })()}
                       </TableTd>
 
                       <TableTd center>
@@ -447,10 +462,14 @@ export default function TradeDocsTable({
                             type="button"
                             className={iconBtn}
                             onClick={() => onOpenRow(row.id)}
-                            title={tabKey === "drafts" ? "Editar" : "Ver / Editar"}
-                            aria-label="Abrir"
+                            title={tabKey === "drafts" ? "Editar" : "Ver"}
+                            aria-label={tabKey === "drafts" ? "Editar" : "Ver"}
                           >
-                            <Pencil className="h-4 w-4" />
+                            {tabKey === "drafts" ? (
+                              <Pencil className="h-4 w-4" />
+                            ) : (
+                              <Eye className="h-4 w-4" />
+                            )}
                           </button>
 
                           {tabKey === "drafts" && onRegisterRow ? (

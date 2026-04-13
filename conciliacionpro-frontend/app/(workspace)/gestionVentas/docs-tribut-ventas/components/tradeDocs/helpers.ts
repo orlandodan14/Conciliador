@@ -67,7 +67,7 @@ export function getJournalDocTypeLabel(docType: DocType) {
 }
 
 export function isReverseNoteDocType(docType: DocType) {
-  return docType === "CREDIT_NOTE" || docType === "DEBIT_NOTE";
+  return docType === "CREDIT_NOTE";
 }
 
 export function buildJournalDescriptionFromHeader(h: DocHeader) {
@@ -222,4 +222,38 @@ export function getDefaultFiscalDocCodeByDocType(
 
   const found = types.find((t) => t.id === id && t.is_active);
   return found?.code || "";
+}
+
+export function getTradeDocSuggestion(args: {
+  status?: string | null;
+  balance?: number | null;
+}) {
+  const status = String(args.status || "").trim().toUpperCase();
+  const balance = Number(args.balance ?? 0);
+
+  if (status === "CANCELADO") {
+    return {
+      text: "Documento cancelado",
+      className: "bg-slate-100 text-slate-700",
+    };
+  }
+
+  if (balance > 0) {
+    return {
+      text: "Requiere gestionar cobro",
+      className: "bg-amber-100 text-amber-900",
+    };
+  }
+
+  if (balance < 0) {
+    return {
+      text: "Requiere gestionar devolución",
+      className: "bg-rose-100 text-rose-800",
+    };
+  }
+
+  return {
+    text: "OK",
+    className: "bg-emerald-100 text-emerald-800",
+  };
 }

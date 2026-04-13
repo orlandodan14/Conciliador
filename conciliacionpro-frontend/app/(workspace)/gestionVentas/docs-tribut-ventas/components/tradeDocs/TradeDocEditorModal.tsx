@@ -146,6 +146,7 @@ export function TradeDocEditorModal(props: {
   updateDocLine: (idx: number, patch: Partial<DocLine>) => void;
 
   // pagos
+  disallowPayments: boolean;
   payments: PaymentRow[];
   addPaymentRow: () => void;
   removePaymentRow: (id: string) => void;
@@ -233,6 +234,7 @@ export function TradeDocEditorModal(props: {
     addDocLine,
     removeDocLine,
     updateDocLine,
+    disallowPayments,
     payments,
     addPaymentRow,
     removePaymentRow,
@@ -266,15 +268,23 @@ export function TradeDocEditorModal(props: {
     cancelDocMVP,
   } = props;
 
-  const tabs: Array<{ key: EditorTab; label: string; hint: string }> = useMemo(
-    () => [
+  const tabs: Array<{ key: EditorTab; label: string; hint: string }> = useMemo(() => {
+    const baseTabs: Array<{ key: EditorTab; label: string; hint: string }> = [
       { key: "CABECERA", label: "Cabecera", hint: "datos generales y estatus" },
       { key: "LINEAS", label: "Líneas", hint: "montos afecto/exento + IVA" },
-      { key: "PAGOS", label: "Formas de pago", hint: "métodos y montos" },
       { key: "ASIENTO", label: "Asiento contable", hint: "cuentas y distribución" },
-    ],
-    []
-  );
+    ];
+
+    if (!disallowPayments) {
+      baseTabs.splice(2, 0, {
+        key: "PAGOS",
+        label: "Formas de pago",
+        hint: "métodos y montos",
+      });
+    }
+
+    return baseTabs;
+  }, [disallowPayments]);
 
   const [headerBranchInput, setHeaderBranchInput] = useState(headerBranchCode || "");
 
@@ -325,11 +335,18 @@ export function TradeDocEditorModal(props: {
     setHeader,
   ]);
 
+  useEffect(() => {
+    if (disallowPayments && editorTab === "PAGOS") {
+      setEditorTab("LINEAS");
+    }
+  }, [disallowPayments, editorTab, setEditorTab]);
+
   function setHeaderPatch(patch: Partial<DocHeader>) {
     setHeader((h) => ({ ...h, ...patch }));
   }
 
-  const isViewMode = mode === "view";  
+  const isViewMode = mode === "view";
+  const canDeleteDraft = canEdit && Boolean(docId) && header.status === "BORRADOR";
 
   function focusGridCell(grid: "lineas" | "asiento", row: number, col: number) {
     if (row < 0 || col < 0) return;
@@ -616,6 +633,12 @@ export function TradeDocEditorModal(props: {
               <button className={theme.btnSoft} onClick={onClose} type="button">
                 Cerrar
               </button>
+
+              {showCancelButton ? (
+                <button className={theme.btnSoft} onClick={cancelDocMVP} type="button">
+                  Cancelar
+                </button>
+              ) : null}
             </div>
           </div>
         ) : (
@@ -680,22 +703,29 @@ export function TradeDocEditorModal(props: {
                 Registrar
               </button>
 
-              <button
-                className={cls(
-                  "rounded-lg bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-700",
-                  (!canEdit || !docId) && "opacity-60 cursor-not-allowed"
-                )}
-                disabled={!canEdit || !docId}
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  void deleteDraftMVP();
-                }}
-                type="button"
-                title={!docId ? "Este documento aún no existe en la base de datos." : "Eliminar borrador"}
-              >
-                Eliminar
-              </button>
+              {docId ? (
+                <button
+                  className={cls(
+                    "rounded-lg bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-700",
+                    !canDeleteDraft && "opacity-60 cursor-not-allowed"
+                  )}
+                  disabled={!canDeleteDraft}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!canDeleteDraft) return;
+                    void deleteDraftMVP();
+                  }}
+                  type="button"
+                  title={
+                    header.status !== "BORRADOR"
+                      ? "Solo se pueden eliminar documentos en estado BORRADOR."
+                      : "Eliminar borrador"
+                  }
+                >
+                  Eliminar
+                </button>
+              ) : null}
 
               {showCancelButton ? (
                 <button className={theme.btnSoft} onClick={cancelDocMVP} type="button">
@@ -831,19 +861,6 @@ export function TradeDocEditorModal(props: {
                             setHeaderPatch({
                               doc_type: v,
                               fiscal_doc_code: defaultFiscalCode,
-                              origin_doc_id: null,
-                              origin_label: "",
-                              origin_doc_type: null,
-                              origin_fiscal_doc_code: null,
-                              origin_issue_date: null,
-                              origin_currency_code: null,
-                              origin_net_taxable: null,
-                              origin_net_exempt: null,
-                              origin_tax_total: null,
-                              origin_grand_total: null,
-                              origin_balance: null,
-                              origin_payment_status: null,
-                              origin_status: null,
                             });
                           }
                         }}
@@ -1550,7 +1567,7 @@ export function TradeDocEditorModal(props: {
       ) : null}
 
       {/* PAGOS */}
-      {editorTab === "PAGOS" ? (
+      {editorTab === "PAGOS" && !disallowPayments ? (
         <div className={theme.card}>
           <div className="px-4 py-3 border-b flex flex-wrap items-center justify-between gap-2">
             <div>

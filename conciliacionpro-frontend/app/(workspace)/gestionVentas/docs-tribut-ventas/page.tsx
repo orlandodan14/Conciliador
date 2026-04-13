@@ -47,6 +47,7 @@ import {
   makePaymentRow,
   renumber,
   getDefaultFiscalDocCodeByDocType,
+  getTradeDocSuggestion,
 } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/helpers";
 
 /**
@@ -54,6 +55,7 @@ import {
  * Helpers
  * =========================
  */
+
 async function findDuplicateFiscalFolio(args: {
   companyId: string;
   fiscalDocCode: string;
@@ -582,6 +584,7 @@ export default function Page() {
     const [viewerOpen, setViewerOpen] = useState(false);
     const [viewerDocId, setViewerDocId] = useState<string | null>(null);
     const [viewerEditorTab, setViewerEditorTab] = useState<EditorTab>("CABECERA");
+    const [viewerShowCancelButton, setViewerShowCancelButton] = useState(false);
     const [viewerHeader, setViewerHeader] = useState<DocHeader>({
       doc_type: "INVOICE",
       fiscal_doc_code: "",
@@ -692,7 +695,11 @@ export default function Page() {
   });
 
   // Origin SEARCH MODAL
-  const needsOrigin = header.doc_type === "CREDIT_NOTE" || header.doc_type === "DEBIT_NOTE";
+  const needsOrigin =
+  header.doc_type === "CREDIT_NOTE" || header.doc_type === "DEBIT_NOTE";
+
+  const disallowPayments =
+    header.doc_type === "CREDIT_NOTE" || header.doc_type === "DEBIT_NOTE";
 
   const [originSearchOpen, setOriginSearchOpen] = useState(false);
   const [originLoading, setOriginLoading] = useState(false);
@@ -743,6 +750,11 @@ export default function Page() {
       return !isRootDocRow;
     });
 
+    const rowSuggestion = getTradeDocSuggestion({
+      status: row.status,
+      balance: Number(row.balance ?? 0),
+    });
+
     if (loading) {
       return <div className="text-[12px] text-slate-500">Cargando trazabilidad...</div>;
     }
@@ -753,12 +765,13 @@ export default function Page() {
 
     return (
       <div className="overflow-hidden rounded-2xl ring-1 ring-slate-200/70">
-        <div className="grid grid-cols-[100px_120px_170px_1fr_120px] bg-gradient-to-b from-slate-100 to-slate-50 text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#0b2b4f]">
+        <div className="grid grid-cols-[100px_140px_140px_180px_1fr_250px] bg-gradient-to-b from-slate-100 to-slate-50 text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#0b2b4f]">
           <div className="px-3 py-2 border-r border-slate-200">Fecha</div>
           <div className="px-3 py-2 border-r border-slate-200">Tipo</div>
           <div className="px-3 py-2 border-r border-slate-200">Documento</div>
+          <div className="px-3 py-2 border-r border-slate-200 text-right">Monto</div>
           <div className="px-3 py-2 border-r border-slate-200">Cómo afecta</div>
-          <div className="px-3 py-2 text-right">Monto</div>
+          <div className="px-3 py-2">Sugerencia</div>
         </div>
 
         {items.map((item, idx) => {
@@ -784,11 +797,14 @@ export default function Page() {
           const affectsLabel =
             item.affects_label || "—";
 
+          const suggestionText = rowSuggestion.text;
+          const suggestionClass = rowSuggestion.className;
+
           return (
             <div
               key={`${item.event_type}-${item.related_doc_id || ""}-${item.payment_id || ""}-${idx}`}
               className={cls(
-                "grid grid-cols-[100px_120px_170px_1fr_120px] text-[12px]",
+                "grid grid-cols-[100px_140px_140px_180px_1fr_250px] text-[12px]",
                 idx % 2 === 0 ? "bg-white" : "bg-slate-50/70"
               )}
             >
@@ -806,14 +822,7 @@ export default function Page() {
               >
                 {docLabel}
               </div>
-
-              <div
-                className="px-3 py-2 border-t border-r border-slate-200/70 truncate whitespace-nowrap text-slate-700"
-                title={affectsLabel}
-              >
-                {affectsLabel}
-              </div>
-
+              
               <div
                 className={cls(
                   "px-3 py-2 border-t border-slate-200/70 text-right font-extrabold whitespace-nowrap",
@@ -822,6 +831,26 @@ export default function Page() {
               >
                 {amountText}
               </div>
+
+              <div
+                className="px-3 py-2 border-t border-r border-slate-200/70 truncate whitespace-nowrap text-slate-700"
+                title={affectsLabel}
+              >
+                {affectsLabel}
+              </div>
+
+              <div className="px-3 py-2 border-t border-r border-slate-200/70">
+                <span
+                  className={cls(
+                    "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold whitespace-nowrap",
+                    suggestionClass
+                  )}
+                  title={suggestionText}
+                >
+                  {suggestionText}
+                </span>
+              </div>
+
             </div>
           );
         })}
@@ -1403,29 +1432,6 @@ export default function Page() {
     return { net_taxable, net_exempt, tax_total, grand_total, paid, balance };
   }, [lines, payments]);
 
-  useEffect(() => {
-    if (!isReverseNoteDocType(header.doc_type)) return;
-    if (!header.origin_doc_id) return;
-    if (payments.length === 0) return;
-
-    const hasSourcePayments = payments.some((p) => Number(p.source_amount || 0) > 0);
-    if (!hasSourcePayments) return;
-
-    const nextPayments = autoFillNotePaymentsFromLines(payments, totals.grand_total);
-
-    const changed = nextPayments.some((p, idx) => {
-      const prev = payments[idx];
-      return String(prev?.amount || "") !== String(p.amount || "");
-    });
-
-    if (!changed) return;
-
-    setPayments(nextPayments);
-  }, [
-    header.doc_type,
-    header.origin_doc_id,
-    totals.grand_total,
-  ]);
 
   useEffect(() => {
     if (!journalAutoMode) return;
@@ -1552,12 +1558,17 @@ export default function Page() {
 
   // Payments
   function addPaymentRow() {
+    if (disallowPayments) return;
     setPayments((p) => [...p, makePaymentRow(header.issue_date || todayISO())]);
   }
+
   function removePaymentRow(id: string) {
+    if (disallowPayments) return;
     setPayments((p) => p.filter((x) => x.id !== id));
   }
+
   function updatePaymentRow(id: string, patch: Partial<PaymentRow>) {
+    if (disallowPayments) return;
     setPayments((p) => p.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   }
 
@@ -2475,326 +2486,6 @@ export default function Page() {
     await searchOriginDocs(false);
   }
 
-  async function loadOriginLines(originTradeDocId: string): Promise<DocLine[]> {
-    const { data, error } = await supabase
-      .from("trade_doc_lines")
-      .select("line_no,item_id,sku,description,qty,unit_price,tax_kind,exempt_amount,taxable_amount,tax_rate,tax_amount,line_total")
-      .eq("company_id", companyId)
-      .eq("trade_doc_id", originTradeDocId)
-      .order("line_no", { ascending: true });
-
-    if (error) throw error;
-
-    const parsed: DocLine[] = (((data as any[]) || []).map((r: any) => {
-      const taxKind = String(r.tax_kind || "").toUpperCase();
-      const isTaxable = taxKind === "EXENTO" ? false : true;
-
-      const exemptAmount = Number(r.exempt_amount || 0);
-      const taxableAmount = Number(r.taxable_amount || 0);
-      const taxAmount = Number(r.tax_amount || 0);
-      const lineTotal = Number(r.line_total || 0);
-
-      return {
-        line_no: Number(r.line_no) || 1,
-        item_id: r.item_id || null,
-        sku: r.sku || "",
-        description: r.description || "",
-        qty: r.qty != null ? String(r.qty) : "1",
-        unit_price: r.unit_price != null ? String(r.unit_price) : "",
-        is_taxable: isTaxable,
-        tax_rate: r.tax_rate != null ? String(r.tax_rate) : (defaultTaxRate || "19"),
-        ex_override: exemptAmount > 0 ? String(exemptAmount) : "",
-        af_override: taxableAmount > 0 ? String(taxableAmount) : "",
-        iva_override: taxAmount > 0 ? String(taxAmount) : "",
-        total_override: lineTotal > 0 ? String(lineTotal) : "",
-      };
-    })) as DocLine[];
-
-    return parsed.length >= 4
-      ? renumber(parsed)
-      : renumber([
-          ...parsed,
-          ...Array.from({ length: Math.max(4 - parsed.length, 0) }, (_, i) =>
-            makeDocLine(parsed.length + i + 1)
-          ),
-        ]);
-  }
-
-  function buildEditableLinesFromOriginForNote(originLines: DocLine[]): DocLine[] {
-    const cleaned = originLines.map((l, idx) => ({
-      ...makeDocLine(idx + 1),
-      line_no: idx + 1,
-      item_id: l.item_id || null,
-      sku: l.sku || "",
-      description: l.description || "",
-      qty: "1",
-      unit_price: "",
-      is_taxable: Boolean(l.is_taxable),
-      tax_rate: String(l.tax_rate || defaultTaxRate || "19"),
-      ex_override: "",
-      af_override: "",
-      iva_override: "",
-      total_override: "",
-    }));
-
-    return cleaned.length >= 4
-      ? renumber(cleaned)
-      : renumber([
-          ...cleaned,
-          ...Array.from({ length: Math.max(4 - cleaned.length, 0) }, (_, i) =>
-            makeDocLine(cleaned.length + i + 1)
-          ),
-        ]);
-  }
-
-async function loadOriginPayments(originTradeDocId: string): Promise<PaymentRow[]> {
-  const { data: payData, error: payError } = await supabase
-    .from("payment_allocations")
-    .select(`
-      allocated_amount,
-      payments (
-        id,
-        payment_date,
-        method,
-        reference,
-        card_kind,
-        card_last4,
-        auth_code,
-        total_amount,
-        extra
-      )
-    `)
-    .eq("company_id", companyId)
-    .eq("trade_doc_id", originTradeDocId);
-
-  if (payError) throw payError;
-
-  let parsedPayments: PaymentRow[] = (((payData as any[]) || []).map((r: any) => {
-    const p = Array.isArray(r.payments) ? r.payments[0] : r.payments;
-
-    const sourceAmount =
-      r.allocated_amount != null
-        ? Number(r.allocated_amount)
-        : Number(p?.total_amount ?? 0);
-
-    return {
-      id: uid(), // nuevo id UI para el nuevo documento
-      payment_date: String(p?.payment_date || header.issue_date || todayISO()),
-      method: (p?.method || "TRANSFERENCIA") as PaymentRow["method"],
-      amount: sourceAmount > 0 ? String(sourceAmount) : "",
-      card_kind: (p?.card_kind || "") as PaymentRow["card_kind"],
-      card_last4: String(p?.card_last4 || ""),
-      auth_code: String(p?.auth_code || ""),
-      reference: String(p?.reference || ""),
-      source_amount: sourceAmount,
-      source_is_primary: false,
-    };
-  })) as PaymentRow[];
-
-  if (parsedPayments.length === 0) {
-    const { data: payFallback, error: payFallbackError } = await supabase
-      .from("payments")
-      .select("id,payment_date,method,reference,card_kind,card_last4,auth_code,total_amount,extra")
-      .eq("company_id", companyId);
-
-    if (payFallbackError) throw payFallbackError;
-
-    parsedPayments = (((payFallback as any[]) || [])
-      .filter((p: any) => p?.extra?.trade_doc_id === originTradeDocId)
-      .map((p: any) => {
-        const sourceAmount = Number(p.total_amount ?? 0);
-
-        return {
-          id: uid(),
-          payment_date: String(p.payment_date || header.issue_date || todayISO()),
-          method: (p.method || "TRANSFERENCIA") as PaymentRow["method"],
-          amount: sourceAmount > 0 ? String(sourceAmount) : "",
-          card_kind: (p.card_kind || "") as PaymentRow["card_kind"],
-          card_last4: String(p.card_last4 || ""),
-          auth_code: String(p.auth_code || ""),
-          reference: String(p.reference || ""),
-          source_amount: sourceAmount,
-          source_is_primary: false,
-        };
-      })) as PaymentRow[];
-  }
-
-  return parsedPayments;
-}
-
-function buildEditablePaymentsFromOriginForNote(originPayments: PaymentRow[]): PaymentRow[] {
-  const normalized: PaymentRow[] = originPayments.map((p): PaymentRow => ({
-    ...makePaymentRow(),
-    payment_date: p.payment_date || header.issue_date || todayISO(),
-    method: p.method as PaymentRow["method"],
-    amount: "",
-    card_kind: (p.card_kind || "") as PaymentRow["card_kind"],
-    card_last4: String(p.card_last4 || ""),
-    auth_code: String(p.auth_code || ""),
-    reference: String(p.reference || ""),
-    source_amount: Number(p.source_amount ?? toNum(p.amount)),
-    source_is_primary: false,
-  }));
-
-  if (normalized.length === 0) {
-    return normalized;
-  }
-
-  const primaryIndex = normalized.reduce((bestIdx, p, idx, arr) => {
-    const current = Number(p.source_amount || 0);
-    const best = Number(arr[bestIdx]?.source_amount || 0);
-    return current > best ? idx : bestIdx;
-  }, 0);
-
-  const result: PaymentRow[] = normalized.map((p, idx): PaymentRow => ({
-    ...p,
-    source_is_primary: idx === primaryIndex,
-  }));
-
-  return result;
-}
-
-function autoFillNotePaymentsFromLines(notePayments: PaymentRow[], noteTotal: number): PaymentRow[] {
-  const total = Math.max(0, Number(noteTotal || 0));
-  if (notePayments.length === 0) return notePayments;
-
-  const paymentsWithSource = notePayments.map((p) => ({
-    ...p,
-    source_amount: Math.max(0, Number(p.source_amount || 0)),
-  }));
-
-  const originTotal = paymentsWithSource.reduce((s, p) => s + Number(p.source_amount || 0), 0);
-  const isFullAmount = originTotal > 0 && Math.abs(originTotal - total) <= 0.5;
-
-  // 1) Si la nota es por el total exacto del origen => copiar montos exactos
-  if (isFullAmount) {
-    return paymentsWithSource.map((p) => ({
-      ...p,
-      amount: Number(p.source_amount || 0) > 0 ? String(Number(p.source_amount || 0)) : "",
-    }));
-  }
-
-  // 2) Si es parcial y hay solo 1 forma de pago => todo a esa forma
-  if (paymentsWithSource.length === 1) {
-    return paymentsWithSource.map((p) => ({
-      ...p,
-      amount: total > 0 ? String(total) : "",
-    }));
-  }
-
-  // 3) Si es parcial y hay varias => todo al pago principal (el de mayor monto origen)
-  if (paymentsWithSource.length > 1) {
-    const primaryIndex = paymentsWithSource.findIndex((p) => p.source_is_primary);
-    const idx = primaryIndex >= 0 ? primaryIndex : 0;
-
-    return paymentsWithSource.map((p, i) => ({
-      ...p,
-      amount: i === idx && total > 0 ? String(total) : "",
-    }));
-  }
-
-  return paymentsWithSource;
-}
-
-async function loadOriginJournalReversed(originTradeDocId: string): Promise<JournalLine[]> {
-  const { data: originDoc, error: originDocError } = await supabase
-    .from("trade_docs")
-    .select("journal_entry_id")
-    .eq("company_id", companyId)
-    .eq("id", originTradeDocId)
-    .maybeSingle();
-
-  if (originDocError) throw originDocError;
-
-  const originJournalEntryId = (originDoc as any)?.journal_entry_id ?? null;
-
-  if (!originJournalEntryId) {
-    return Array.from({ length: 4 }, (_, i) => makeJournalLine(i + 1));
-  }
-
-  const { data: jlData, error: jlError } = await supabase
-    .from("journal_entry_lines")
-    .select(`
-      line_no,
-      line_description,
-      debit,
-      credit,
-      account_code_snapshot,
-      business_line_id,
-      branch_id,
-      business_lines (
-        id,
-        code,
-        name
-      ),
-      branches (
-        id,
-        code,
-        name
-      )
-    `)
-    .eq("company_id", companyId)
-    .eq("journal_entry_id", originJournalEntryId)
-    .order("line_no", { ascending: true });
-
-  if (jlError) throw jlError;
-
-  const reversed: JournalLine[] = (((jlData as any[]) || []).map((r: any, idx: number) => {
-    const bu = Array.isArray(r.business_lines) ? r.business_lines[0] : r.business_lines;
-    const br = Array.isArray(r.branches) ? r.branches[0] : r.branches;
-
-    return {
-      line_no: idx + 1,
-      account_code: String(r.account_code_snapshot || ""),
-      description: String(r.line_description || ""),
-      debit: r.credit != null && Number(r.credit) > 0 ? String(r.credit) : "",
-      credit: r.debit != null && Number(r.debit) > 0 ? String(r.debit) : "",
-
-      cost_center_id: null,
-      business_line_id: r.business_line_id || null,
-      branch_id: r.branch_id || null,
-
-      cost_center_code: "",
-      business_line_code: String(bu?.code || ""),
-      branch_code: String(br?.code || ""),
-    };
-  })) as JournalLine[];
-
-  return reversed.length >= 4
-    ? renumber(reversed)
-    : renumber([
-        ...reversed,
-        ...Array.from({ length: Math.max(4 - reversed.length, 0) }, (_, i) =>
-          makeJournalLine(reversed.length + i + 1)
-        ),
-      ]);
-}
-
-async function hydrateTabsFromOrigin(originTradeDocId: string) {
-  const [originLines, originPayments] = await Promise.all([
-    loadOriginLines(originTradeDocId),
-    loadOriginPayments(originTradeDocId),
-  ]);
-
-  if (isReverseNoteDocType(header.doc_type)) {
-    const editableLines = buildEditableLinesFromOriginForNote(originLines);
-    const editablePayments = buildEditablePaymentsFromOriginForNote(originPayments);
-
-    setLines(editableLines);
-    setPayments(editablePayments);
-    setJournalAutoMode(true);
-    setJournalLines(Array.from({ length: 4 }, (_, i) => makeJournalLine(i + 1)));
-    return;
-  }
-
-  const originJournalReversed = await loadOriginJournalReversed(originTradeDocId);
-
-  setLines(originLines);
-  setPayments(originPayments);
-  setJournalAutoMode(false);
-  setJournalLines(originJournalReversed);
-}
-
   function clearOrigin() {
     setHeader((h) => ({
       ...h,
@@ -2834,7 +2525,11 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
         origin_status: d.status ?? null,
       });
 
-      await hydrateTabsFromOrigin(d.id);
+      // NC/ND: el origen solo se referencia en cabecera.
+      // NO se copian líneas, pagos ni asiento.
+      setPayments([]);
+      setJournalAutoMode(true);
+      setJournalLines(Array.from({ length: 4 }, (_, i) => makeJournalLine(i + 1)));
 
       setEditorTab("LINEAS");
       setOriginSearchOpen(false);
@@ -2842,7 +2537,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
       setMessages([
         {
           level: "error",
-          text: e?.message || "No se pudo copiar la información del documento origen.",
+          text: e?.message || "No se pudo seleccionar el documento origen.",
         },
       ]);
     }
@@ -3090,6 +2785,13 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
 
     return () => window.clearInterval(timer);
   }, [bulkRegistering, draftSaving, draftDeleting]);
+
+  useEffect(() => {
+    if (!disallowPayments) return;
+    if (payments.length === 0) return;
+
+    setPayments([]);
+  }, [disallowPayments, payments.length]);
 
   /**
    * Save / status
@@ -3398,9 +3100,11 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
 
       const oldPaymentIds = await getPaymentIdsByTradeDoc(companyId, savedId);
 
-      const usedPayments = payments.filter((p) => {
-        return toNum(p.amount) > 0 || String(p.reference || "").trim() !== "";
-      });
+      const usedPayments = disallowPayments
+        ? []
+        : payments.filter((p) => {
+            return toNum(p.amount) > 0 || String(p.reference || "").trim() !== "";
+          });
 
       if (usedPayments.length > 0) {
         const paymentRows = usedPayments.map((p) => ({
@@ -3654,6 +3358,55 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
     } catch (e: any) {
       setMessages([{ level: "error", text: e?.message || "No se pudo cancelar el documento." }]);
     }
+    }
+
+    async function cancelViewerDocMVP() {
+    if (!allowCancelSales) {
+      setMessages([{ level: "error", text: "La empresa tiene deshabilitada la cancelación de ventas." }]);
+      return;
+    }
+
+    if (!companyId || !viewerDocId || !canEdit) return;
+
+    if (viewerHeader.status !== "VIGENTE") {
+      setMessages([{ level: "error", text: "Solo puedes cancelar documentos VIGENTES." }]);
+      return;
+    }
+
+    const ok = confirm("¿Cancelar este documento? Se guardará fecha y motivo.");
+    if (!ok) return;
+
+    try {
+      const cancelled_at = viewerHeader.cancelled_at || todayISO();
+
+      const { error } = await supabase
+        .from("trade_docs")
+        .update({
+          status: "CANCELADO",
+          cancelled_at,
+          cancel_reason: viewerHeader.cancel_reason || null,
+        })
+        .eq("company_id", companyId)
+        .eq("id", viewerDocId);
+
+      if (error) throw error;
+
+      setViewerHeader((prev) => ({
+        ...prev,
+        status: "CANCELADO",
+        cancelled_at,
+      }));
+
+      await loadRegisteredDocs(true);
+
+      setMessages([
+        { level: "warn", text: `Documento CANCELADO (${cancelled_at}).` },
+      ]);
+    } catch (e: any) {
+      setMessages([
+        { level: "error", text: e?.message || "No se pudo cancelar el documento." },
+      ]);
+    }
   }
 
   async function openDraft(draftId: string) {
@@ -3851,7 +3604,11 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
             ])
       );
 
-      setPayments(parsedPayments);
+      setPayments(
+        (h as any).doc_type === "CREDIT_NOTE" || (h as any).doc_type === "DEBIT_NOTE"
+          ? []
+          : parsedPayments
+      );
 
       
       // =========================
@@ -3944,6 +3701,22 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
     }
   }
 
+  async function openRegisteredDocView(tradeDocId: string) {
+    if (!companyId) return;
+
+    const row =
+      registeredDocs.find((x) => x.id === tradeDocId) ||
+      drafts.find((x) => x.id === tradeDocId);
+
+    if (!row) {
+      setMessages([
+        { level: "error", text: "No se encontró el documento para abrir en modo consulta." },
+      ]);
+      return;
+    }
+
+    await openViewDoc(row as any, { allowCancelInViewer: true });
+  }
 
   async function deleteDraftInternal(draftId: string) {
     if (!companyId) throw new Error("Falta companyId.");
@@ -4050,11 +3823,15 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
     }
   }
 
-  async function openViewDoc(doc: OriginDocLite) {
+  async function openViewDoc(
+    doc: OriginDocLite,
+    options?: { allowCancelInViewer?: boolean }
+  ) {
     if (!companyId) return;
 
     try {
       setMessages([]);
+      setViewerShowCancelButton(Boolean(options?.allowCancelInViewer));
 
       const tradeDocId = doc.id;
 
@@ -4290,7 +4067,11 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
             ])
       );
 
-      setViewerPayments(parsedPayments);
+      setViewerPayments(
+        (row as any).doc_type === "CREDIT_NOTE" || (row as any).doc_type === "DEBIT_NOTE"
+          ? []
+          : parsedPayments
+      );
 
       setViewerJournalLines(
         journalRows.length >= 4
@@ -4874,7 +4655,9 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
                   allSelected={allDraftsSelected}
                   onToggleSelectAll={toggleSelectAllDrafts}
                   onToggleRow={toggleDraft}
-                  onOpenRow={openDraft}
+                  onOpenRow={(id) => {
+                    void openDraft(id);
+                  }}
                   onExpandRow={(row) => {
                     void loadTimeline(row.id);
                   }}
@@ -4940,7 +4723,9 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
                   allSelected={allRegisteredSelected}
                   onToggleSelectAll={toggleSelectAllRegistered}
                   onToggleRow={toggleRegistered}
-                  onOpenRow={openDraft}
+                  onOpenRow={(id) => {
+                    void openRegisteredDocView(id);
+                  }}
                   onExpandRow={(row) => {
                     void loadTimeline(row.id);
                   }}
@@ -5001,6 +4786,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
         openCreateCounterparty={openCreateCounterparty}
         resolveCounterpartyHeader={resolveCounterpartyHeader}
         needsOrigin={needsOrigin}
+        disallowPayments={disallowPayments}
         onOpenOriginSearch={() => {
           setOriginSearchOpen(true);
           setOriginResults([]);
@@ -5067,7 +4853,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
         subtitle="Ventas • Consulta"
         widthClass="w-[min(1200px,96vw)]"
         canEdit={false}
-        showCancelButton={false}
+        showCancelButton={viewerShowCancelButton && allowCancelSales && viewerHeader.status === "VIGENTE"}
         docId={viewerDocId}
         header={viewerHeader}
         setHeader={setViewerHeader}
@@ -5086,6 +4872,9 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
         openCreateCounterparty={() => {}}
         resolveCounterpartyHeader={() => {}}
         needsOrigin={viewerHeader.doc_type === "CREDIT_NOTE" || viewerHeader.doc_type === "DEBIT_NOTE"}
+        disallowPayments={
+          viewerHeader.doc_type === "CREDIT_NOTE" || viewerHeader.doc_type === "DEBIT_NOTE"
+        }
         onOpenOriginSearch={() => {}}
         clearOrigin={() => {}}
         lines={viewerLines}
@@ -5147,7 +4936,7 @@ async function hydrateTabsFromOrigin(originTradeDocId: string) {
         saveDraftMVP={async () => {}}
         markAsVigenteMVP={async () => {}}
         deleteDraftMVP={async () => {}}
-        cancelDocMVP={async () => {}}
+        cancelDocMVP={cancelViewerDocMVP}
       />
 
       <OriginDocSearchModal
