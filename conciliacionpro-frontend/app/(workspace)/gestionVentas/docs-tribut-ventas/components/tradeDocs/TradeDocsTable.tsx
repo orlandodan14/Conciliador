@@ -1,8 +1,19 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Pencil, Eye, CheckCircle2, Trash2 } from "lucide-react";
-import type { DraftRow, DocHeader } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/types";
+import {
+  Pencil,
+  Eye,
+  CheckCircle2,
+  Trash2,
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
+} from "lucide-react";
+import type {
+  DraftRow,
+  DocHeader,
+} from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/types";
 import {
   cls,
   formatNumber,
@@ -52,12 +63,53 @@ type TradeDocsTableProps = {
   hasMore?: boolean;
 };
 
+type SortKey =
+  | "issue_date"
+  | "fiscal_doc_code"
+  | "number"
+  | "counterparty_identifier_snapshot"
+  | "counterparty_name_snapshot"
+  | "net_taxable"
+  | "net_exempt"
+  | "tax_total"
+  | "grand_total"
+  | "balance"
+  | "status";
+
+type SortDirection = "asc" | "desc";
+
+function SortIcon({
+  active,
+  direction,
+}: {
+  active: boolean;
+  direction: SortDirection;
+}) {
+  if (!active) {
+    return <ChevronsUpDown className="h-3.5 w-3.5 text-slate-400" />;
+  }
+
+  return direction === "asc" ? (
+    <ChevronUp className="h-3.5 w-3.5 text-[#123b63]" />
+  ) : (
+    <ChevronDown className="h-3.5 w-3.5 text-[#123b63]" />
+  );
+}
+
 function TableTh({
   children,
   align,
+  sortable = false,
+  active = false,
+  direction = "asc",
+  onSort,
 }: {
   children: React.ReactNode;
   align?: string;
+  sortable?: boolean;
+  active?: boolean;
+  direction?: SortDirection;
+  onSort?: () => void;
 }) {
   return (
     <th
@@ -68,7 +120,23 @@ function TableTh({
         align
       )}
     >
-      {children}
+      {sortable ? (
+        <button
+          type="button"
+          onClick={onSort}
+          className={cls(
+            "mx-auto inline-flex items-center gap-1 rounded-md px-1.5 py-1 transition-colors",
+            "hover:bg-white/60",
+            active && "bg-white/70"
+          )}
+          title="Ordenar"
+        >
+          <span>{children}</span>
+          <SortIcon active={active} direction={direction} />
+        </button>
+      ) : (
+        children
+      )}
     </th>
   );
 }
@@ -102,26 +170,14 @@ function TableTd({
   );
 }
 
-const COL_FALLBACK = [4, 8, 6, 10, 11, 17, 8, 8, 8, 9, 9, 8, 10];
-
-function buildGridStyle(colWeights: number[] | null): React.CSSProperties {
-  const base =
-    colWeights && colWeights.length >= 13 ? colWeights.slice(0, 13) : COL_FALLBACK;
-
-  return {
-    gridTemplateColumns: base.map((w) => `${w}fr`).join(" "),
-  };
-}
-
 function ExpandedRow({
   content,
 }: {
   content?: React.ReactNode;
 }) {
-
   return (
-    <div className="w-full px-3 py-3 bg-slate-50/70">
-      <div className="overflow-hidden rounded-xl bg-white/95 ring-1 ring-slate-200/70 shadow-sm">
+    <div className="w-full bg-slate-50/70 px-3 py-3">
+      <div className="overflow-hidden rounded-xl bg-white/95 shadow-sm ring-1 ring-slate-200/70">
         <div className="px-3 py-3">
           {content || (
             <div className="text-[12px] text-slate-500">
@@ -204,7 +260,9 @@ export default function TradeDocsTable({
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const tableRef = useRef<HTMLTableElement | null>(null);
   const scrollWrapRef = useRef<HTMLDivElement | null>(null);
-  const [colWeights, setColWeights] = useState<number[] | null>(null);
+
+  const [sortKey, setSortKey] = useState<SortKey>("issue_date");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
 
   function toggleExpand(row: TradeDocsTableRow) {
     const willExpand = expandedId !== row.id;
@@ -217,69 +275,105 @@ export default function TradeDocsTable({
     }
   }
 
-  function computeColWeights() {
-    const table = tableRef.current;
-    if (!table) return;
-
-    const ths = Array.from(table.querySelectorAll("thead th")) as HTMLElement[];
-    if (!ths.length) return;
-
-    const widths = ths.map((th) =>
-      Math.max(1, Math.round(th.getBoundingClientRect().width))
-    );
-
-    setColWeights(widths.slice(0, 13));
-    }
-
-    function handleScrollWrap() {
+  function handleScrollWrap() {
     if (!useInternalScroll) return;
     if (!hasMore || loadingMore) return;
 
     const el = scrollWrapRef.current;
     if (!el) return;
 
-    const nearBottom =
-      el.scrollTop + el.clientHeight >= el.scrollHeight - 120;
+    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 120;
 
     if (nearBottom) {
       onReachEnd?.();
     }
   }
 
-  useEffect(() => {
-    computeColWeights();
+  function handleSort(nextKey: SortKey) {
+    if (sortKey === nextKey) {
+      setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+      return;
+    }
 
+    setSortKey(nextKey);
+    setSortDirection("asc");
+  }
+
+  const sortedRows = useMemo(() => {
+    const data = [...rows];
+
+    data.sort((a, b) => {
+      const dir = sortDirection === "asc" ? 1 : -1;
+
+      const getValue = (row: TradeDocsTableRow): string | number => {
+        switch (sortKey) {
+          case "issue_date":
+            return String(row.issue_date || "");
+          case "fiscal_doc_code":
+            return String(row.fiscal_doc_code || "").toUpperCase();
+          case "number":
+            return String(row.number || "").toUpperCase();
+          case "counterparty_identifier_snapshot":
+            return String(row.counterparty_identifier_snapshot || "").toUpperCase();
+          case "counterparty_name_snapshot":
+            return String(row.counterparty_name_snapshot || "").toUpperCase();
+          case "net_taxable":
+            return Number(row.net_taxable || 0);
+          case "net_exempt":
+            return Number(row.net_exempt || 0);
+          case "tax_total":
+            return Number(row.tax_total || 0);
+          case "grand_total":
+            return Number(row.grand_total || 0);
+          case "balance":
+            return Number(row.balance ?? row.grand_total ?? 0);
+          case "status":
+            return String(row.status || "").toUpperCase();
+          default:
+            return "";
+        }
+      };
+
+      const av = getValue(a);
+      const bv = getValue(b);
+
+      if (typeof av === "number" && typeof bv === "number") {
+        return (av - bv) * dir;
+      }
+
+      return (
+        String(av).localeCompare(String(bv), "es", {
+          numeric: true,
+          sensitivity: "base",
+        }) * dir
+      );
+    });
+
+    return data;
+  }, [rows, sortKey, sortDirection]);
+
+  useEffect(() => {
     const table = tableRef.current;
     if (!table) return;
 
-    const ro = new ResizeObserver(() => computeColWeights());
+    const noop = () => {};
+    const ro = new ResizeObserver(noop);
     ro.observe(table);
-
-    const ths = Array.from(table.querySelectorAll("thead th")) as HTMLElement[];
-    ths.forEach((th) => ro.observe(th));
-
-    window.addEventListener("resize", computeColWeights);
 
     return () => {
       ro.disconnect();
-      window.removeEventListener("resize", computeColWeights);
     };
   }, []);
 
-  useEffect(() => {
-    const t = window.setTimeout(() => computeColWeights(), 0);
-    return () => window.clearTimeout(t);
-  }, [rows.length, expandedId]);
-
   return (
-    <div className="mt-0 rounded-2xl bg-white ring-1 ring-slate-200/60 shadow-[0_8px_30px_rgba(20,12,70,0.12)]">
+    <div className="mt-0 rounded-2xl bg-white shadow-[0_8px_30px_rgba(20,12,70,0.12)] ring-1 ring-slate-200/60">
       <div
         ref={scrollWrapRef}
         onScroll={handleScrollWrap}
         className={cls(
           "w-full overflow-x-hidden rounded-2xl",
           useInternalScroll
-            ? "overflow-y-auto max-h-[calc(100vh-320px)]"
+            ? "max-h-[calc(100vh-320px)] overflow-y-auto"
             : "overflow-y-visible"
         )}
       >
@@ -322,23 +416,117 @@ export default function TradeDocsTable({
                 </div>
               </TableTh>
 
-              <TableTh>Emisión</TableTh>
-              <TableTh>Cód</TableTh>
-              <TableTh>Folio</TableTh>
-              <TableTh>RUT/NIC</TableTh>
-              <TableTh>Nombre contraparte</TableTh>
-              <TableTh align="text-right">Afecto</TableTh>
-              <TableTh align="text-right">Exento</TableTh>
-              <TableTh align="text-right">IVA</TableTh>
-              <TableTh align="text-right">Total</TableTh>
-              <TableTh align="text-right">Saldo</TableTh>
-              <TableTh align="text-center">Estado</TableTh>
+              <TableTh
+                sortable
+                active={sortKey === "issue_date"}
+                direction={sortDirection}
+                onSort={() => handleSort("issue_date")}
+              >
+                Emisión
+              </TableTh>
+
+              <TableTh
+                sortable
+                active={sortKey === "fiscal_doc_code"}
+                direction={sortDirection}
+                onSort={() => handleSort("fiscal_doc_code")}
+              >
+                Cód
+              </TableTh>
+
+              <TableTh
+                sortable
+                active={sortKey === "number"}
+                direction={sortDirection}
+                onSort={() => handleSort("number")}
+              >
+                Folio
+              </TableTh>
+
+              <TableTh
+                sortable
+                active={sortKey === "counterparty_identifier_snapshot"}
+                direction={sortDirection}
+                onSort={() => handleSort("counterparty_identifier_snapshot")}
+              >
+                RUT/NIC
+              </TableTh>
+
+              <TableTh
+                sortable
+                active={sortKey === "counterparty_name_snapshot"}
+                direction={sortDirection}
+                onSort={() => handleSort("counterparty_name_snapshot")}
+              >
+                Nombre contraparte
+              </TableTh>
+
+              <TableTh
+                align="text-right"
+                sortable
+                active={sortKey === "net_taxable"}
+                direction={sortDirection}
+                onSort={() => handleSort("net_taxable")}
+              >
+                Afecto
+              </TableTh>
+
+              <TableTh
+                align="text-right"
+                sortable
+                active={sortKey === "net_exempt"}
+                direction={sortDirection}
+                onSort={() => handleSort("net_exempt")}
+              >
+                Exento
+              </TableTh>
+
+              <TableTh
+                align="text-right"
+                sortable
+                active={sortKey === "tax_total"}
+                direction={sortDirection}
+                onSort={() => handleSort("tax_total")}
+              >
+                IVA
+              </TableTh>
+
+              <TableTh
+                align="text-right"
+                sortable
+                active={sortKey === "grand_total"}
+                direction={sortDirection}
+                onSort={() => handleSort("grand_total")}
+              >
+                Total
+              </TableTh>
+
+              <TableTh
+                align="text-right"
+                sortable
+                active={sortKey === "balance"}
+                direction={sortDirection}
+                onSort={() => handleSort("balance")}
+              >
+                Saldo
+              </TableTh>
+
+              <TableTh
+                align="text-center"
+                sortable
+                active={sortKey === "status"}
+                direction={sortDirection}
+                onSort={() => handleSort("status")}
+              >
+                Estado
+              </TableTh>
+
               <TableTh align="text-center">Acciones</TableTh>
             </tr>
           </thead>
 
           <tbody className="text-[12px]">
-            {!loading && rows.length === 0 ? (
+            {!loading && sortedRows.length === 0 ? (
               <tr>
                 <td colSpan={13} className="p-10 text-center text-slate-500">
                   {tabKey === "drafts"
@@ -347,7 +535,7 @@ export default function TradeDocsTable({
                 </td>
               </tr>
             ) : (
-              rows.map((row, idx) => {
+              sortedRows.map((row, idx) => {
                 const expanded = expandedId === row.id;
                 const checked = Boolean(selectedMap[row.id]);
 
@@ -356,7 +544,7 @@ export default function TradeDocsTable({
                     <tr
                       onClick={() => toggleExpand(row)}
                       className={cls(
-                        "border-t cursor-pointer transition-colors",
+                        "cursor-pointer border-t transition-colors",
                         idx % 2 === 0 ? "bg-white" : "bg-slate-50",
                         "hover:bg-sky-50/40",
                         expanded && "bg-sky-50/70"
@@ -401,15 +589,25 @@ export default function TradeDocsTable({
                         </span>
                       </TableTd>
 
-                      <TableTd right>{formatNumber(Number(row.net_taxable || 0), moneyDecimals)}</TableTd>
-                      <TableTd right>{formatNumber(Number(row.net_exempt || 0), moneyDecimals)}</TableTd>
-                      <TableTd right>{formatNumber(Number(row.tax_total || 0), moneyDecimals)}</TableTd>
+                      <TableTd right>
+                        {formatNumber(Number(row.net_taxable || 0), moneyDecimals)}
+                      </TableTd>
+
+                      <TableTd right>
+                        {formatNumber(Number(row.net_exempt || 0), moneyDecimals)}
+                      </TableTd>
+
+                      <TableTd right>
+                        {formatNumber(Number(row.tax_total || 0), moneyDecimals)}
+                      </TableTd>
 
                       <TableTd right>
                         <span
                           className={cls(
                             "font-semibold",
-                            row.doc_type === "CREDIT_NOTE" ? "text-rose-700" : "text-emerald-700"
+                            row.doc_type === "CREDIT_NOTE"
+                              ? "text-rose-700"
+                              : "text-emerald-700"
                           )}
                         >
                           {row.doc_type === "CREDIT_NOTE" ? "- " : ""}
@@ -475,10 +673,16 @@ export default function TradeDocsTable({
                           {tabKey === "drafts" && onRegisterRow ? (
                             <button
                               type="button"
-                              className={cls(iconBtnPrimary, !canEdit && "opacity-60 cursor-not-allowed")}
+                              className={cls(
+                                iconBtnPrimary,
+                                !canEdit && "cursor-not-allowed opacity-60"
+                              )}
                               disabled={!canEdit}
                               onClick={async () => {
-                                const rowHeaderForCheck = buildRowHeaderForCheck(row, baseCurrency);
+                                const rowHeaderForCheck = buildRowHeaderForCheck(
+                                  row,
+                                  baseCurrency
+                                );
 
                                 if (hasFiscalFolioData(rowHeaderForCheck)) {
                                   await assertUniqueFiscalFolio({
@@ -500,7 +704,10 @@ export default function TradeDocsTable({
                           {tabKey === "drafts" && onDeleteRow ? (
                             <button
                               type="button"
-                              className={cls(iconBtnDanger, !canEdit && "opacity-60 cursor-not-allowed")}
+                              className={cls(
+                                iconBtnDanger,
+                                !canEdit && "cursor-not-allowed opacity-60"
+                              )}
                               disabled={!canEdit}
                               onClick={(e) => {
                                 e.preventDefault();
@@ -520,9 +727,7 @@ export default function TradeDocsTable({
                     {expanded && (
                       <tr className="border-t bg-white">
                         <td colSpan={13} className="p-0">
-                          <ExpandedRow
-                            content={renderExpandedContent?.(row)}
-                          />
+                          <ExpandedRow content={renderExpandedContent?.(row)} />
                         </td>
                       </tr>
                     )}
@@ -532,6 +737,7 @@ export default function TradeDocsTable({
             )}
           </tbody>
         </table>
+
         {loadingMore ? (
           <div className="border-t bg-white px-3 py-3 text-center text-[12px] text-slate-500">
             Cargando más documentos...

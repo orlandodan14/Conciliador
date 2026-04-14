@@ -48,7 +48,24 @@ import {
   renumber,
   getDefaultFiscalDocCodeByDocType,
   getTradeDocSuggestion,
+  getTradeDocPaymentState,
+  applyTradeDocFilters,
 } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/helpers";
+import {
+  findDuplicateFiscalFolio,
+  assertUniqueFiscalFolio,
+  isUnknownColumnError,
+  safeUpsertSalesDoc,
+  safeDeleteByCompanyAndEntry,
+  upsertDraftJournalEntry,
+  deleteDraftPaymentsByTradeDoc,
+  getPaymentIdsByTradeDoc,
+  deletePaymentsByIds,
+  rollbackDraftArtifacts,
+  getCurrentAccountingPeriodId,
+  getAuthUserId,
+  getMyRoleForCompany,
+} from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/data";
 
 /**
  * =========================
@@ -56,389 +73,7 @@ import {
  * =========================
  */
 
-async function findDuplicateFiscalFolio(args: {
-  companyId: string;
-  fiscalDocCode: string;
-  series: string;
-  number: string;
-  excludeDocId?: string | null;
-}) {
-  const fiscalDocCode = normalizeFolioPart(args.fiscalDocCode);
-  const series = normalizeFolioPart(args.series);
-  const number = normalizeFolioPart(args.number);
 
-  if (!fiscalDocCode || !number) return null;
-
-  let query = supabase
-    .from("trade_docs")
-    .select("id,status,doc_type,fiscal_doc_code,series,number")
-    .eq("company_id", args.companyId)
-    .eq("fiscal_doc_code", fiscalDocCode)
-    .eq("number", number)
-    .neq("status", "CANCELADO")
-    .limit(1);
-
-  if (series) {
-    query = query.eq("series", series);
-  } else {
-    query = query.is("series", null);
-  }
-
-  if (args.excludeDocId) {
-    query = query.neq("id", args.excludeDocId);
-  }
-
-  const { data, error } = await query.maybeSingle();
-  if (error) throw error;
-  return data ?? null;
-}
-
-async function assertUniqueFiscalFolio(args: {
-  companyId: string;
-  header: DocHeader;
-  excludeDocId?: string | null;
-}) {
-  if (!hasFiscalFolioData(args.header)) return;
-
-  const duplicate = await findDuplicateFiscalFolio({
-    companyId: args.companyId,
-    fiscalDocCode: args.header.fiscal_doc_code,
-    series: args.header.series,
-    number: args.header.number,
-    excludeDocId: args.excludeDocId ?? null,
-  });
-
-  if (duplicate) {
-    const dupFolio = folioLabel(
-      (duplicate as any).series ?? null,
-      (duplicate as any).number ?? null
-    );
-
-    throw new Error(
-      `No se puede guardar ni registrar este documento porque el folio fiscal ${String((duplicate as any).fiscal_doc_code || "").trim()} ${dupFolio} ya fue usado en otro documento.`
-    );
-  }
-}
-
-function isUnknownColumnError(err: any) {
-  const msg = String(err?.message ?? "");
-  return /column .* does not exist/i.test(msg) || /does not exist in the rowset/i.test(msg);
-}
-
-async function safeUpsertSalesDoc(args: {
-  companyId: string;
-  docId: string | null;
-  payloadFull: any;
-  payloadFallback: any;
-}) {
-  const { companyId, docId, payloadFull, payloadFallback } = args;
-
-  if (!docId) {
-    const tryInsert = async (payload: any) => {
-      const { data, error } = await supabase.from("trade_docs").insert(payload).select("id,status").single();
-      if (error) throw error;
-      return data as any;
-    };
-
-    try {
-      return await tryInsert(payloadFull);
-    } catch (e: any) {
-      if (isUnknownColumnError(e)) return await tryInsert(payloadFallback);
-      throw e;
-    }
-  } else {
-    const tryUpdate = async (payload: any) => {
-      const { error } = await supabase
-        .from("trade_docs")
-        .update(payload)
-        .eq("company_id", companyId)
-        .eq("id", docId);
-      if (error) throw error;
-    };
-
-    try {
-      await tryUpdate(payloadFull);
-      return { id: docId, status: payloadFull.status };
-    } catch (e: any) {
-      if (isUnknownColumnError(e)) {
-        await tryUpdate(payloadFallback);
-        return { id: docId, status: payloadFallback.status };
-      }
-      throw e;
-    }
-  }
-}
-
-async function safeDeleteByCompanyAndEntry(table: string, companyId: string, journalEntryId: string) {
-  const { error } = await supabase
-    .from(table as any)
-    .delete()
-    .eq("company_id", companyId)
-    .eq("journal_entry_id", journalEntryId);
-
-  if (error) throw error;
-}
-
-async function upsertDraftJournalEntry(args: {
-  companyId: string;
-  docId: string;
-  entryDate: string;
-  description: string;
-  reference: string | null;
-  currencyCode: string;
-  userId: string | null;
-  headerDocType: DocType;
-  fiscalDocCode: string | null;
-  series: string | null;
-  number: string | null;
-  existingJournalEntryId: string | null;
-  journalMode: "AUTO" | "MANUAL";
-}) {
-  const {
-    companyId,
-    docId,
-    entryDate,
-    description,
-    reference,
-    currencyCode,
-    userId,
-    headerDocType,
-    fiscalDocCode,
-    series,
-    number,
-    existingJournalEntryId,
-    journalMode,
-  } = args;
-
-  const accountingPeriodId = await getCurrentAccountingPeriodId(companyId, entryDate);
-  if (!accountingPeriodId) {
-    throw new Error(
-      `La fecha ${entryDate} no pertenece a un período contable ABIERTO o el período está bloqueado.`
-    );
-  }
-
-  const payload = {
-    company_id: companyId,
-    accounting_period_id: accountingPeriodId,
-    entry_date: entryDate,
-    description,
-    reference,
-    currency_code: currencyCode,
-    status: "DRAFT",
-    created_by: userId,
-    posted_at: null,
-    posted_by: null,
-    extra: {
-      source: "trade_docs_sales",
-      trade_doc_id: docId,
-      doc_type: headerDocType,
-      fiscal_doc_code: fiscalDocCode || null,
-      folio: folioLabel(series, number),
-      journal_mode: journalMode,
-    },
-  };
-
-  if (!existingJournalEntryId) {
-    const { data, error } = await supabase
-      .from("journal_entries")
-      .insert(payload as any)
-      .select("id")
-      .single();
-
-    if (error) throw error;
-    return data.id as string;
-  }
-
-  const { error } = await supabase
-    .from("journal_entries")
-    .update(payload as any)
-    .eq("company_id", companyId)
-    .eq("id", existingJournalEntryId);
-
-  if (error) throw error;
-
-  return existingJournalEntryId;
-}
-
-async function deleteDraftPaymentsByTradeDoc(companyId: string, tradeDocId: string) {
-  const { data: allocRows, error: allocRowsError } = await supabase
-    .from("payment_allocations")
-    .select("payment_id")
-    .eq("company_id", companyId)
-    .eq("trade_doc_id", tradeDocId);
-
-  if (allocRowsError) throw allocRowsError;
-
-  const paymentIds = Array.from(
-    new Set(((allocRows as any[]) || []).map((x) => x.payment_id).filter(Boolean))
-  );
-
-  const { error: deleteAllocError } = await supabase
-    .from("payment_allocations")
-    .delete()
-    .eq("company_id", companyId)
-    .eq("trade_doc_id", tradeDocId);
-
-  if (deleteAllocError) throw deleteAllocError;
-
-  if (paymentIds.length > 0) {
-    const { error: deletePaymentsError } = await supabase
-      .from("payments")
-      .delete()
-      .eq("company_id", companyId)
-      .in("id", paymentIds);
-
-    if (deletePaymentsError) throw deletePaymentsError;
-  }
-}
-
-async function getPaymentIdsByTradeDoc(companyId: string, tradeDocId: string): Promise<string[]> {
-  const { data, error } = await supabase
-    .from("payment_allocations")
-    .select("payment_id")
-    .eq("company_id", companyId)
-    .eq("trade_doc_id", tradeDocId);
-
-  if (error) throw error;
-
-  return Array.from(
-    new Set(((data as any[]) || []).map((x) => x.payment_id).filter(Boolean))
-  );
-}
-
-async function deletePaymentsByIds(companyId: string, tradeDocId: string, paymentIds: string[]) {
-  if (!paymentIds.length) return;
-
-  const { error: allocError } = await supabase
-    .from("payment_allocations")
-    .delete()
-    .eq("company_id", companyId)
-    .eq("trade_doc_id", tradeDocId)
-    .in("payment_id", paymentIds);
-
-  if (allocError) throw allocError;
-
-  const { error: payError } = await supabase
-    .from("payments")
-    .delete()
-    .eq("company_id", companyId)
-    .in("id", paymentIds);
-
-  if (payError) throw payError;
-}
-
-async function rollbackDraftArtifacts(args: {
-  companyId: string;
-  tradeDocId: string | null;
-  journalEntryId: string | null;
-}) {
-  const { companyId, tradeDocId, journalEntryId } = args;
-
-  // 1) pagos + allocations
-  if (tradeDocId) {
-    try {
-      await deleteDraftPaymentsByTradeDoc(companyId, tradeDocId);
-    } catch {}
-  }
-
-  // 2) líneas asiento + asiento borrador
-  if (journalEntryId) {
-    try {
-      await supabase
-        .from("journal_entry_lines")
-        .delete()
-        .eq("company_id", companyId)
-        .eq("journal_entry_id", journalEntryId);
-    } catch {}
-
-    try {
-      await supabase
-        .from("journal_entries")
-        .delete()
-        .eq("company_id", companyId)
-        .eq("id", journalEntryId)
-        .eq("status", "DRAFT");
-    } catch {}
-  }
-
-  // 3) líneas documento
-  if (tradeDocId) {
-    try {
-      await supabase
-        .from("trade_doc_lines")
-        .delete()
-        .eq("company_id", companyId)
-        .eq("trade_doc_id", tradeDocId);
-    } catch {}
-  }
-
-  // 4) documento solo si sigue BORRADOR
-  if (tradeDocId) {
-    try {
-      await supabase
-        .from("trade_docs")
-        .delete()
-        .eq("company_id", companyId)
-        .eq("id", tradeDocId)
-        .eq("status", "BORRADOR");
-    } catch {}
-  }
-}
-
-async function getCurrentAccountingPeriodId(
-  companyId: string,
-  issueDate: string
-): Promise<string | null> {
-  const { data, error } = await supabase
-    .from("accounting_periods")
-    .select("id,start_date,end_date,status,is_current")
-    .eq("company_id", companyId)
-    .lte("start_date", issueDate)
-    .gte("end_date", issueDate)
-    .order("start_date", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw error;
-  if (!data) return null;
-
-  const status = normalizePeriodStatus((data as any).status);
-
-  const isOpen =
-    status === "ABIERTO" ||
-    status === "OPEN";
-
-  const isBlocked =
-    status === "BLOQUEADO" ||
-    status === "BLOCKED";
-
-  if (isBlocked) return null;
-  if (!isOpen) return null;
-
-  return (data as any).id ?? null;
-}
-
-async function getAuthUserId(): Promise<string | null> {
-  const { data, error } = await supabase.auth.getUser();
-  if (error) return null;
-  return data?.user?.id ?? null;
-}
-
-async function getMyRoleForCompany(companyId: string): Promise<"OWNER" | "EDITOR" | "LECTOR" | null> {
-  const uid = await getAuthUserId();
-  if (!uid) return null;
-
-  const { data, error } = await supabase
-    .from("company_members")
-    .select("role,status")
-    .eq("company_id", companyId)
-    .eq("user_id", uid)
-    .maybeSingle();
-
-  if (error || !data) return null;
-  if (data.status && data.status !== "active" && data.status !== "ACTIVE") return null;
-  return data.role as any;
-}
 
 /**
  * =========================
@@ -455,10 +90,13 @@ const theme = {
   glowB:
     "pointer-events-none absolute -bottom-24 -left-24 h-72 w-72 rounded-full bg-white/10 blur-3xl",
   btnGlass:
-    "rounded-2xl bg-white/10 px-4 py-2 text-[12px] font-extrabold ring-1 ring-white/15 hover:bg-white/15 transition",
+    "rounded-2xl bg-white/10 px-4 py-2 text-[12px] font-extrabold ring-1 ring-white/15 hover:bg-white/15 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-md active:translate-y-0",
   btnPrimary:
-    "rounded-lg px-3 py-2 text-sm text-white bg-slate-900 hover:bg-slate-800",
-  btnSoft: "rounded-lg border px-3 py-2 text-sm hover:bg-slate-50",
+    "rounded-xl px-4 py-2 text-sm font-bold text-white bg-slate-900 transition-all duration-200 hover:bg-slate-800 hover:-translate-y-[1px] hover:shadow-md active:translate-y-0",
+  btnSoft:
+    "rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-all duration-200 hover:bg-slate-50 hover:border-slate-400 hover:-translate-y-[1px] hover:shadow-sm active:translate-y-0",
+  btnFilter:
+    "rounded-xl border border-[#123b63]/20 bg-[#123b63] px-4 py-2 text-sm font-bold text-white transition-all duration-200 hover:bg-[#0f3354] hover:-translate-y-[1px] hover:shadow-md active:translate-y-0",
   card: "rounded-2xl border bg-white shadow-sm overflow-hidden",
 };
 
@@ -496,7 +134,7 @@ function Modal({
     <div className="fixed inset-0 z-50">
       <div className="absolute inset-0 bg-black/45" onClick={onClose} />
       <div className={cls("absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2", widthClass)}>
-        <div className="flex h-[min(84vh,780px)] flex-col overflow-hidden rounded-[22px] bg-white shadow-xl ring-1 ring-black/5">
+        <div className="flex max-h-[min(84vh,780px)] flex-col overflow-hidden rounded-[22px] bg-white shadow-xl ring-1 ring-black/5">
           <div className={cls("relative px-5 py-4", theme.header)}>
             <div className={theme.glowA} />
             <div className={theme.glowB} />
@@ -858,6 +496,46 @@ export default function Page() {
     );
   }
 
+  const [listFilters, setListFilters] = useState({
+    issue_date_from: "",
+    issue_date_to: "",
+    doc_type: "",
+    fiscal_doc_code: "",
+    number: "",
+    counterparty_identifier: "",
+    counterparty_name: "",
+    grand_total_min: "",
+    grand_total_max: "",
+    balance_min: "",
+    balance_max: "",
+    payment_state: "",
+  });
+
+  function clearListFilters() {
+    setListFilters({
+      issue_date_from: "",
+      issue_date_to: "",
+      doc_type: "",
+      fiscal_doc_code: "",
+      number: "",
+      counterparty_identifier: "",
+      counterparty_name: "",
+      grand_total_min: "",
+      grand_total_max: "",
+      balance_min: "",
+      balance_max: "",
+      payment_state: "",
+    });
+  }
+
+  const filteredDrafts = useMemo(() => {
+    return applyTradeDocFilters(drafts, listFilters);
+  }, [drafts, listFilters]);
+
+  const filteredRegisteredDocs = useMemo(() => {
+    return applyTradeDocFilters(registeredDocs, listFilters);
+  }, [registeredDocs, listFilters]);
+
   // ✅ Selección borradores
   const [selectedDrafts, setSelectedDrafts] = useState<Record<string, boolean>>({});
   const [selectedRegistered, setSelectedRegistered] = useState<Record<string, boolean>>({});
@@ -872,15 +550,15 @@ export default function Page() {
     [selectedRegistered]
   );
 
-  const allDraftsSelected = useMemo(
-    () => drafts.length > 0 && selectedDraftIds.length === drafts.length,
-    [drafts.length, selectedDraftIds.length]
-  );
+  const allDraftsSelected = useMemo(() => {
+    if (filteredDrafts.length === 0) return false;
+    return filteredDrafts.every((d) => selectedDrafts[d.id]);
+  }, [filteredDrafts, selectedDrafts]);
 
-  const allRegisteredSelected = useMemo(
-    () => registeredDocs.length > 0 && selectedRegisteredIds.length === registeredDocs.length,
-    [registeredDocs.length, selectedRegisteredIds.length]
-  );
+  const allRegisteredSelected = useMemo(() => {
+    if (filteredRegisteredDocs.length === 0) return false;
+    return filteredRegisteredDocs.every((d) => selectedRegistered[d.id]);
+  }, [filteredRegisteredDocs, selectedRegistered]);
 
   function toggleDraft(id: string, v?: boolean) {
     setSelectedDrafts((p) => ({ ...p, [id]: v ?? !p[id] }));
@@ -899,16 +577,16 @@ export default function Page() {
   }
 
   function selectAllDrafts() {
-    const next: Record<string, boolean> = {};
-    drafts.forEach((d) => {
+    const next: Record<string, boolean> = { ...selectedDrafts };
+    filteredDrafts.forEach((d) => {
       next[d.id] = true;
     });
     setSelectedDrafts(next);
   }
 
   function selectAllRegistered() {
-    const next: Record<string, boolean> = {};
-    registeredDocs.forEach((d) => {
+    const next: Record<string, boolean> = { ...selectedRegistered };
+    filteredRegisteredDocs.forEach((d) => {
       next[d.id] = true;
     });
     setSelectedRegistered(next);
@@ -952,6 +630,7 @@ export default function Page() {
   // =========================
   const [importOpen, setImportOpen] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [bulkRegistering, setBulkRegistering] = useState(false);
   const [importPreview, setImportPreview] = useState<any[]>([]);
   const [importErrors, setImportErrors] = useState<string[]>([]);
@@ -1481,6 +1160,7 @@ export default function Page() {
     drafts.forEach((d) => (byType[d.doc_type] = (byType[d.doc_type] || 0) + 1));
     return { count, sumTotal, byType };
   }, [drafts]);
+
 
   /**
    * UI ops
@@ -4592,6 +4272,24 @@ export default function Page() {
                       : "Refrescar"}
                   </button>
 
+                  <button
+                    type="button"
+                    className={theme.btnFilter}
+                    onClick={() => setFiltersOpen(true)}
+                    title="Abrir filtros"
+                  >
+                    Filtros
+                  </button>
+
+                  <button
+                    type="button"
+                    className={theme.btnSoft}
+                    onClick={clearListFilters}
+                    title="Limpiar filtros"
+                  >
+                    Limpiar filtros
+                  </button>
+
                   {activeTab === "drafts" && drafts.length ? (
                     <>
                       <button
@@ -4641,10 +4339,11 @@ export default function Page() {
               </div>
             </div>
 
+
             <div className="p-4">
               {activeTab === "drafts" ? (
                 <TradeDocsTable
-                  rows={drafts}
+                  rows={filteredDrafts}
                   loading={loadingDrafts}
                   moneyDecimals={moneyDecimals}
                   canEdit={canEdit}
@@ -4712,7 +4411,7 @@ export default function Page() {
                 />
               ) : (
                 <TradeDocsTable
-                  rows={registeredDocs}
+                  rows={filteredRegisteredDocs}
                   loading={loadingRegisteredDocs}
                   moneyDecimals={moneyDecimals}
                   canEdit={canEdit}
@@ -5086,6 +4785,218 @@ export default function Page() {
             <div className="border-t bg-slate-50 px-3 py-2 text-xs text-slate-500">Mostrando 50 filas en preview.</div>
           </div>
         ) : null}
+      </Modal>
+
+      <Modal
+        open={filtersOpen}
+        title="Filtros de documentos"
+        subtitle={`Ventas • ${activeTab === "drafts" ? "Borradores" : "Registrados"}`}
+        onClose={() => setFiltersOpen(false)}
+        widthClass="w-[min(980px,96vw)]"
+        footer={
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs text-slate-500">
+              {activeTab === "drafts"
+                ? `${filteredDrafts.length} resultado(s)`
+                : `${filteredRegisteredDocs.length} resultado(s)`}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className={theme.btnSoft}
+                onClick={clearListFilters}
+              >
+                Limpiar
+              </button>
+
+              <button
+                type="button"
+                className={theme.btnSoft}
+                onClick={() => setFiltersOpen(false)}
+              >
+                Cerrar
+              </button>
+
+              <button
+                type="button"
+                className={theme.btnPrimary}
+                onClick={() => setFiltersOpen(false)}
+              >
+                Aplicar
+              </button>
+            </div>
+          </div>
+        }
+      >
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">
+              Fecha desde
+            </label>
+            <input
+              type="date"
+              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
+              value={listFilters.issue_date_from}
+              onChange={(e) =>
+                setListFilters((f) => ({ ...f, issue_date_from: e.target.value }))
+              }
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">
+              Fecha hasta
+            </label>
+            <input
+              type="date"
+              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
+              value={listFilters.issue_date_to}
+              onChange={(e) =>
+                setListFilters((f) => ({ ...f, issue_date_to: e.target.value }))
+              }
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">
+              Tipo
+            </label>
+            <select
+              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
+              value={listFilters.doc_type}
+              onChange={(e) =>
+                setListFilters((f) => ({ ...f, doc_type: e.target.value }))
+              }
+            >
+              <option value="">Todos</option>
+              <option value="INVOICE">Factura</option>
+              <option value="DEBIT_NOTE">Nota débito</option>
+              <option value="CREDIT_NOTE">Nota crédito</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">
+              Folio
+            </label>
+            <input
+              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
+              value={listFilters.number}
+              onChange={(e) =>
+                setListFilters((f) => ({ ...f, number: e.target.value }))
+              }
+              placeholder="1,2,3 o 1-3"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">
+              RUT / ID
+            </label>
+            <input
+              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
+              value={listFilters.counterparty_identifier}
+              onChange={(e) =>
+                setListFilters((f) => ({ ...f, counterparty_identifier: e.target.value }))
+              }
+              placeholder="11.111.111-1"
+            />
+          </div>
+
+          <div className="md:col-span-2">
+            <label className="mb-1 block text-xs font-medium text-slate-600">
+              Nombre
+            </label>
+            <input
+              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
+              value={listFilters.counterparty_name}
+              onChange={(e) =>
+                setListFilters((f) => ({ ...f, counterparty_name: e.target.value }))
+              }
+              placeholder="Orlando"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">
+              Situación
+            </label>
+            <select
+              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
+              value={listFilters.payment_state}
+              onChange={(e) =>
+                setListFilters((f) => ({ ...f, payment_state: e.target.value }))
+              }
+            >
+              <option value="">Todas</option>
+              <option value="PENDIENTE">Pendiente</option>
+              <option value="PAGADO">Pagado</option>
+              <option value="SALDO_A_FAVOR">Saldo a favor</option>
+              <option value="CANCELADO">Cancelado</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">
+              Monto mínimo
+            </label>
+            <input
+              type="number"
+              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
+              value={listFilters.grand_total_min}
+              onChange={(e) =>
+                setListFilters((f) => ({ ...f, grand_total_min: e.target.value }))
+              }
+              placeholder="0"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">
+              Monto máximo
+            </label>
+            <input
+              type="number"
+              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
+              value={listFilters.grand_total_max}
+              onChange={(e) =>
+                setListFilters((f) => ({ ...f, grand_total_max: e.target.value }))
+              }
+              placeholder="999999"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">
+              Saldo mínimo
+            </label>
+            <input
+              type="number"
+              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
+              value={listFilters.balance_min}
+              onChange={(e) =>
+                setListFilters((f) => ({ ...f, balance_min: e.target.value }))
+              }
+              placeholder="0"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">
+              Saldo máximo
+            </label>
+            <input
+              type="number"
+              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
+              value={listFilters.balance_max}
+              onChange={(e) =>
+                setListFilters((f) => ({ ...f, balance_max: e.target.value }))
+              }
+              placeholder="999999"
+            />
+          </div>
+        </div>
       </Modal>
 
       {/* Modal crear tercero (reutilizable) */}

@@ -257,3 +257,137 @@ export function getTradeDocSuggestion(args: {
     className: "bg-emerald-100 text-emerald-800",
   };
 }
+
+export function getTradeDocPaymentState(args: {
+  status?: string | null;
+  balance?: number | null;
+}) {
+  const status = String(args.status || "").trim().toUpperCase();
+  const balance = Number(args.balance ?? 0);
+
+  if (status === "CANCELADO") return "CANCELADO";
+  if (balance < 0) return "SALDO_A_FAVOR";
+  if (balance > 0) return "PENDIENTE";
+  return "PAGADO";
+}
+
+function expandNumberToken(token: string): string[] {
+  const raw = String(token || "").trim();
+  if (!raw) return [];
+
+  if (raw.includes("-")) {
+    const [aRaw, bRaw] = raw.split("-").map((x) => x.trim());
+    const a = Number(aRaw);
+    const b = Number(bRaw);
+
+    if (Number.isFinite(a) && Number.isFinite(b) && a <= b) {
+      const out: string[] = [];
+      for (let i = a; i <= b; i++) out.push(String(i));
+      return out;
+    }
+  }
+
+  return [raw];
+}
+
+function parseNumberFilterTokens(value: string): string[] {
+  return String(value || "")
+    .split(",")
+    .flatMap((part) => expandNumberToken(part))
+    .map((x) => String(x).trim().toUpperCase())
+    .filter(Boolean);
+}
+
+export function applyTradeDocFilters(
+  rows: any[],
+  filters: {
+    issue_date_from: string;
+    issue_date_to: string;
+    doc_type: string;
+    fiscal_doc_code: string;
+    number: string;
+    counterparty_identifier: string;
+    counterparty_name: string;
+    grand_total_min: string;
+    grand_total_max: string;
+    balance_min: string;
+    balance_max: string;
+    payment_state: string;
+  }
+) {
+  return rows.filter((row) => {
+    const issueDate = String(row.issue_date || "");
+    const docType = String(row.doc_type || "").trim().toUpperCase();
+    const fiscalDocCode = String(row.fiscal_doc_code || "").trim().toUpperCase();
+    const number = String(row.number || "").trim().toUpperCase();
+    const counterpartyIdentifier = normalizeIdentifier(
+      String(row.counterparty_identifier_snapshot || "")
+    );
+    const counterpartyName = String(row.counterparty_name_snapshot || "")
+      .trim()
+      .toLowerCase();
+
+    const grandTotal = Number(row.grand_total || 0);
+    const balance = Number(row.balance ?? row.grand_total ?? 0);
+    const paymentState = getTradeDocPaymentState({
+      status: row.status,
+      balance,
+    });
+
+    if (filters.issue_date_from && issueDate < filters.issue_date_from) return false;
+    if (filters.issue_date_to && issueDate > filters.issue_date_to) return false;
+
+    if (filters.doc_type && docType !== String(filters.doc_type).trim().toUpperCase()) {
+      return false;
+    }
+
+    if (
+      filters.fiscal_doc_code &&
+      !fiscalDocCode.includes(String(filters.fiscal_doc_code).trim().toUpperCase())
+    ) {
+      return false;
+    }
+
+    if (filters.number) {
+      const wantedNumbers = parseNumberFilterTokens(filters.number);
+
+      if (wantedNumbers.length > 0) {
+        const matchesAny = wantedNumbers.some((token) => number.includes(token));
+        if (!matchesAny) return false;
+      }
+    }
+
+    if (filters.counterparty_identifier) {
+      const wantedId = normalizeIdentifier(filters.counterparty_identifier);
+      if (!counterpartyIdentifier.includes(wantedId)) return false;
+    }
+
+    if (filters.counterparty_name) {
+      const wantedName = String(filters.counterparty_name).trim().toLowerCase();
+      if (!counterpartyName.includes(wantedName)) return false;
+    }
+
+    if (filters.grand_total_min !== "" && grandTotal < Number(filters.grand_total_min)) {
+      return false;
+    }
+
+    if (filters.grand_total_max !== "" && grandTotal > Number(filters.grand_total_max)) {
+      return false;
+    }
+
+    if (filters.balance_min !== "" && balance < Number(filters.balance_min)) {
+      return false;
+    }
+
+    if (filters.balance_max !== "" && balance > Number(filters.balance_max)) {
+      return false;
+    }
+
+    if (filters.payment_state && paymentState !== filters.payment_state) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
