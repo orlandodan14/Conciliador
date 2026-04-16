@@ -66,6 +66,21 @@ import {
   getAuthUserId,
   getMyRoleForCompany,
 } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/data";
+import BaseModal from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/BaseModal";
+import TradeDocsFiltersModal from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocsFiltersModal";
+import TradeDocsImportModal from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocsImportModal";
+import {
+  tradeDocsTheme,
+  tradeDocsHeaderCell,
+  tradeDocsHeaderSub,
+  tradeDocsBodyCell,
+  tradeDocsCellInputBase,
+  tradeDocsCellInputRight,
+} from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/ui";
+import {
+  createEmptyTradeDocListFilters,
+} from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/helpers";
+import type { TradeDocListFilters } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/types";
 
 /**
  * =========================
@@ -80,25 +95,6 @@ import {
  * Theme
  * =========================
  */
-const theme = {
-  shell:
-    "overflow-hidden rounded-[28px] bg-white ring-1 ring-slate-200 shadow-[0_18px_70px_rgba(15,23,42,0.10)]",
-  header:
-    "relative bg-gradient-to-r from-[#0b2b4f] via-[#123b63] to-[#0b2b4f] text-white",
-  glowA:
-    "pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-white/10 blur-3xl",
-  glowB:
-    "pointer-events-none absolute -bottom-24 -left-24 h-72 w-72 rounded-full bg-white/10 blur-3xl",
-  btnGlass:
-    "rounded-2xl bg-white/10 px-4 py-2 text-[12px] font-extrabold ring-1 ring-white/15 hover:bg-white/15 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-md active:translate-y-0",
-  btnPrimary:
-    "rounded-xl px-4 py-2 text-sm font-bold text-white bg-slate-900 transition-all duration-200 hover:bg-slate-800 hover:-translate-y-[1px] hover:shadow-md active:translate-y-0",
-  btnSoft:
-    "rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-all duration-200 hover:bg-slate-50 hover:border-slate-400 hover:-translate-y-[1px] hover:shadow-sm active:translate-y-0",
-  btnFilter:
-    "rounded-xl border border-[#123b63]/20 bg-[#123b63] px-4 py-2 text-sm font-bold text-white transition-all duration-200 hover:bg-[#0f3354] hover:-translate-y-[1px] hover:shadow-md active:translate-y-0",
-  card: "rounded-2xl border bg-white shadow-sm overflow-hidden",
-};
 
 const iconBtn =
   "inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50";
@@ -109,62 +105,6 @@ const iconBtnPrimary =
 const iconBtnDanger =
   "inline-flex h-9 w-9 items-center justify-center rounded-lg border border-rose-200 bg-white text-rose-700 hover:bg-rose-50";
 
-
-function Modal({
-  open,
-  title,
-  subtitle,
-  children,
-  onClose,
-  footer,
-  widthClass = "w-[min(1200px,96vw)]",
-}: {
-  open: boolean;
-  title: string;
-  subtitle?: string;
-  children: React.ReactNode;
-  onClose: () => void;
-  footer?: React.ReactNode;
-  widthClass?: string;
-}) {
-  if (!open) return null;
-
-
-  return (
-    <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0 bg-black/45" onClick={onClose} />
-      <div className={cls("absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2", widthClass)}>
-        <div className="flex max-h-[min(84vh,780px)] flex-col overflow-hidden rounded-[22px] bg-white shadow-xl ring-1 ring-black/5">
-          <div className={cls("relative px-5 py-4", theme.header)}>
-            <div className={theme.glowA} />
-            <div className={theme.glowB} />
-            <div className="relative flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-[11px] font-extrabold uppercase text-white/80">{subtitle || "Ventas"}</div>
-                <h3 className="truncate text-lg font-black text-white">{title}</h3>
-              </div>
-              <button
-                className="ml-3 rounded-xl px-3 py-1.5 text-sm font-extrabold text-white/90 hover:bg-white/10"
-                onClick={onClose}
-                title="Cerrar"
-                aria-label="Cerrar"
-              >
-                ✕
-              </button>
-            </div>
-          </div>
-
-          {/* ⛔️ Importante: NO overflow-x */}
-          <div className="flex-1 overflow-y-auto overflow-x-hidden p-5">{children}</div>
-
-          {footer ? (
-            <div className="shrink-0 border-t bg-white/95 backdrop-blur px-5 py-3">{footer}</div>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 
 
@@ -496,36 +436,12 @@ export default function Page() {
     );
   }
 
-  const [listFilters, setListFilters] = useState({
-    issue_date_from: "",
-    issue_date_to: "",
-    doc_type: "",
-    fiscal_doc_code: "",
-    number: "",
-    counterparty_identifier: "",
-    counterparty_name: "",
-    grand_total_min: "",
-    grand_total_max: "",
-    balance_min: "",
-    balance_max: "",
-    payment_state: "",
-  });
+  const [listFilters, setListFilters] = useState<TradeDocListFilters>(
+    createEmptyTradeDocListFilters()
+  );
 
   function clearListFilters() {
-    setListFilters({
-      issue_date_from: "",
-      issue_date_to: "",
-      doc_type: "",
-      fiscal_doc_code: "",
-      number: "",
-      counterparty_identifier: "",
-      counterparty_name: "",
-      grand_total_min: "",
-      grand_total_max: "",
-      balance_min: "",
-      balance_max: "",
-      payment_state: "",
-    });
+    setListFilters(createEmptyTradeDocListFilters());
   }
 
   const filteredDrafts = useMemo(() => {
@@ -641,13 +557,6 @@ export default function Page() {
   const [bulkRegisterProgress, setBulkRegisterProgress] = useState(0);
   const [bulkRegisterProgressVisible, setBulkRegisterProgressVisible] = useState(false);
   const [bulkRegisterProgressDone, setBulkRegisterProgressDone] = useState(false);
-
-  const headerCell =
-    "text-left text-[12px] font-semibold text-slate-700 border border-slate-200 bg-slate-50/70 px-2 py-1 align-bottom";
-  const headerSub = "block text-[10px] font-normal text-slate-500 leading-3 mt-0.5";
-  const bodyCell = "border border-slate-200 px-2 py-1 align-middle";
-  const cellInputBase = "w-full bg-transparent outline-none px-1 py-0.5 text-[13px] leading-5";
-  const cellInputRight = "text-right";
 
   /**
    * boot + settings
@@ -4115,10 +4024,10 @@ export default function Page() {
           </div>
         </div>
       ) : null}
-      <div className={theme.shell}>
-        <div className={cls(theme.header, "px-7 py-7")}>
-          <div className={theme.glowA} />
-          <div className={theme.glowB} />
+      <div className={tradeDocsTheme.shell}>
+        <div className={cls(tradeDocsTheme.header, "px-7 py-7")}>
+          <div className={tradeDocsTheme.glowA} />
+          <div className={tradeDocsTheme.glowB} />
 
           <div className="relative flex flex-wrap items-end justify-between gap-4">
             <div className="min-w-0">
@@ -4138,7 +4047,7 @@ export default function Page() {
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                className={theme.btnGlass}
+                className={tradeDocsTheme.btnGlass}
                 onClick={() => {
                   if (activeTab === "drafts") {
                     setDraftsOffset(0);
@@ -4156,7 +4065,7 @@ export default function Page() {
 
               <button
                 type="button"
-                className={cls(theme.btnGlass, !canEdit && "opacity-60 cursor-not-allowed")}
+                className={cls(tradeDocsTheme.btnGlass, !canEdit && "opacity-60 cursor-not-allowed")}
                 disabled={!canEdit}
                 onClick={openImport}
                 title="Importar documentos desde Excel"
@@ -4166,7 +4075,7 @@ export default function Page() {
 
               <button
                 type="button"
-                className={cls(theme.btnGlass, !canEdit && "opacity-60 cursor-not-allowed")}
+                className={cls(tradeDocsTheme.btnGlass, !canEdit && "opacity-60 cursor-not-allowed")}
                 disabled={!canEdit}
                 onClick={openNewDoc}
                 title="Crear un borrador nuevo"
@@ -4208,7 +4117,7 @@ export default function Page() {
         ) : null}
 
         <div className="p-7">
-          <div className={theme.card}>
+          <div className={tradeDocsTheme.card}>
             <div className="border-b px-4 py-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -4250,7 +4159,7 @@ export default function Page() {
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    className={theme.btnSoft}
+                    className={tradeDocsTheme.btnSoft}
                     onClick={() => {
                       if (activeTab === "drafts") {
                         setDraftsOffset(0);
@@ -4274,7 +4183,7 @@ export default function Page() {
 
                   <button
                     type="button"
-                    className={theme.btnFilter}
+                    className={tradeDocsTheme.btnFilter}
                     onClick={() => setFiltersOpen(true)}
                     title="Abrir filtros"
                   >
@@ -4283,7 +4192,7 @@ export default function Page() {
 
                   <button
                     type="button"
-                    className={theme.btnSoft}
+                    className={tradeDocsTheme.btnSoft}
                     onClick={clearListFilters}
                     title="Limpiar filtros"
                   >
@@ -4294,7 +4203,7 @@ export default function Page() {
                     <>
                       <button
                         type="button"
-                        className={theme.btnSoft}
+                        className={tradeDocsTheme.btnSoft}
                         onClick={toggleSelectAllDrafts}
                         disabled={!canEdit}
                       >
@@ -4303,7 +4212,7 @@ export default function Page() {
 
                       <button
                         type="button"
-                        className={theme.btnSoft}
+                        className={tradeDocsTheme.btnSoft}
                         onClick={clearDraftSelection}
                       >
                         Limpiar
@@ -4312,7 +4221,7 @@ export default function Page() {
                       <button
                         type="button"
                         className={cls(
-                          theme.btnPrimary,
+                          tradeDocsTheme.btnPrimary,
                           (!canEdit || selectedDraftIds.length === 0 || bulkRegistering) &&
                             "opacity-60 cursor-not-allowed"
                         )}
@@ -4325,7 +4234,7 @@ export default function Page() {
                       <button
                         type="button"
                         className={cls(
-                          theme.btnSoft,
+                          tradeDocsTheme.btnSoft,
                           (!canEdit || selectedDraftIds.length === 0) && "opacity-60 cursor-not-allowed"
                         )}
                         disabled={!canEdit || selectedDraftIds.length === 0}
@@ -4455,12 +4364,12 @@ export default function Page() {
         onClose={closeEditor}
         zIndexClass="z-50"
         theme={{
-          header: theme.header,
-          glowA: theme.glowA,
-          glowB: theme.glowB,
-          btnPrimary: theme.btnPrimary,
-          btnSoft: theme.btnSoft,
-          card: theme.card,
+          header: tradeDocsTheme.header,
+          glowA: tradeDocsTheme.glowA,
+          glowB: tradeDocsTheme.glowB,
+          btnPrimary: tradeDocsTheme.btnPrimary,
+          btnSoft: tradeDocsTheme.btnSoft,
+          card: tradeDocsTheme.card,
         }}
         title={docId ? `Editar documento (${docId.slice(0, 8)}…)` : "Nuevo documento"}
         subtitle="Ventas • Editor"
@@ -4512,11 +4421,11 @@ export default function Page() {
         accounts={accounts}
         accByCode={accByCode}
         accountPolicyByCode={accountPolicyByCode}
-        headerCell={headerCell}
-        headerSub={headerSub}
-        bodyCell={bodyCell}
-        cellInputBase={cellInputBase}
-        cellInputRight={cellInputRight}
+        headerCell={tradeDocsHeaderCell}
+        headerSub={tradeDocsHeaderSub}
+        bodyCell={tradeDocsBodyCell}
+        cellInputBase={tradeDocsCellInputBase}
+        cellInputRight={tradeDocsCellInputRight}
         moneyDecimals={moneyDecimals}
         totals={totals}
         badgeTypeClass={badgeType}
@@ -4541,12 +4450,12 @@ export default function Page() {
         zIndexClass="z-[90]"
         mode="view"
         theme={{
-          header: theme.header,
-          glowA: theme.glowA,
-          glowB: theme.glowB,
-          btnPrimary: theme.btnPrimary,
-          btnSoft: theme.btnSoft,
-          card: theme.card,
+          header: tradeDocsTheme.header,
+          glowA: tradeDocsTheme.glowA,
+          glowB: tradeDocsTheme.glowB,
+          btnPrimary: tradeDocsTheme.btnPrimary,
+          btnSoft: tradeDocsTheme.btnSoft,
+          card: tradeDocsTheme.card,
         }}
         title={viewerDocId ? `Ver documento (${viewerDocId.slice(0, 8)}…)` : "Ver documento"}
         subtitle="Ventas • Consulta"
@@ -4594,11 +4503,11 @@ export default function Page() {
         accounts={accounts}
         accByCode={accByCode}
         accountPolicyByCode={accountPolicyByCode}
-        headerCell={headerCell}
-        headerSub={headerSub}
-        bodyCell={bodyCell}
-        cellInputBase={cellInputBase}
-        cellInputRight={cellInputRight}
+        headerCell={tradeDocsHeaderCell}
+        headerSub={tradeDocsHeaderSub}
+        bodyCell={tradeDocsBodyCell}
+        cellInputBase={tradeDocsCellInputBase}
+        cellInputRight={tradeDocsCellInputRight}
         moneyDecimals={moneyDecimals}
         totals={{
           net_taxable: viewerLines.reduce((s, l) => s + calcLineAmounts(l).af, 0),
@@ -4643,12 +4552,12 @@ export default function Page() {
         onClose={() => setOriginSearchOpen(false)}
         canEdit={canEdit}
         theme={{
-          header: theme.header,
-          glowA: theme.glowA,
-          glowB: theme.glowB,
-          btnPrimary: theme.btnPrimary,
-          btnSoft: theme.btnSoft,
-          card: theme.card,
+          header: tradeDocsTheme.header,
+          glowA: tradeDocsTheme.glowA,
+          glowB: tradeDocsTheme.glowB,
+          btnPrimary: tradeDocsTheme.btnPrimary,
+          btnSoft: tradeDocsTheme.btnSoft,
+          card: tradeDocsTheme.card,
         }}
         moneyDecimals={moneyDecimals}
         formatNumber={formatNumber}
@@ -4678,326 +4587,38 @@ export default function Page() {
         onViewDoc={(doc) => {
           void openViewDoc(doc);
         }}
-        headerCell={headerCell}
-        headerSub={headerSub}
-        bodyCell={bodyCell}
+        headerCell={tradeDocsHeaderCell}
+        headerSub={tradeDocsHeaderSub}
+        bodyCell={tradeDocsBodyCell}
       />
 
       {/* =======================
           IMPORT MODAL
          ======================= */}
-      <Modal
+      <TradeDocsImportModal
         open={importOpen}
-        title="Carga masiva"
-        subtitle="Ventas • Excel → Borradores"
+        canEdit={canEdit}
+        importing={importing}
+        importErrors={importErrors}
+        importPreview={importPreview}
         onClose={closeImport}
-        widthClass="w-[min(900px,96vw)]"
-        footer={
-          <div className="flex items-center justify-between gap-2">
-            <button className={theme.btnSoft} onClick={closeImport} disabled={importing}>
-              Cerrar
-            </button>
-            <button
-              className={cls(
-                theme.btnPrimary,
-                (!canEdit || importing || !importPreview.length || importErrors.length > 0) && "opacity-60 cursor-not-allowed"
-              )}
-              disabled={!canEdit || importing || !importPreview.length || importErrors.length > 0}
-              onClick={confirmImportToDrafts}
-            >
-              {importing ? "Importando..." : "Crear borradores"}
-            </button>
-          </div>
-        }
-      >
-        <div className="rounded-2xl border bg-slate-50 p-3 text-sm text-slate-700">
-          Sube un Excel con columnas:{" "}
-          <b>
-            doc_type, fiscal_doc_code, issue_date, due_date, series, number, currency_code,
-            counterparty_identifier, counterparty_name, reference
-          </b>
-          .
-          <div className="mt-1 text-xs text-slate-500">Hoja recomendada: “Ventas”.</div>
-        </div>
+        onConfirm={confirmImportToDrafts}
+        onPickExcel={onPickExcel}
+      />
 
-        <div className="mt-3">
-          <input
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) onPickExcel(f);
-              e.currentTarget.value = "";
-            }}
-          />
-        </div>
-
-        {importErrors.length ? (
-          <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
-            <b>Errores:</b>
-            <ul className="mt-2 list-disc pl-5">
-              {importErrors.slice(0, 12).map((x, i) => (
-                <li key={i}>{x}</li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-
-        {importPreview.length ? (
-          <div className="mt-3 rounded-2xl border overflow-hidden">
-            <div className="bg-slate-50 px-3 py-2 text-xs text-slate-600">Preview ({importPreview.length} filas)</div>
-            <div className="max-h-[360px] overflow-y-auto overflow-x-hidden">
-              <table className="w-full text-sm table-fixed border-collapse">
-                <colgroup>
-                  <col style={{ width: "14%" }} />
-                  <col style={{ width: "10%" }} />
-                  <col style={{ width: "16%" }} />
-                  <col style={{ width: "16%" }} />
-                  <col style={{ width: "12%" }} />
-                  <col style={{ width: "32%" }} />
-                </colgroup>
-                <thead>
-                  <tr className="bg-white">
-                    <th className="border px-2 py-2 text-left">doc_type</th>
-                    <th className="border px-2 py-2 text-left">fiscal</th>
-                    <th className="border px-2 py-2 text-left">issue</th>
-                    <th className="border px-2 py-2 text-left">due</th>
-                    <th className="border px-2 py-2 text-left">folio</th>
-                    <th className="border px-2 py-2 text-left">counterparty</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {importPreview.slice(0, 50).map((r, i) => (
-                    <tr key={i} className="hover:bg-sky-50/30">
-                      <td className="border px-2 py-2">{r.doc_type}</td>
-                      <td className="border px-2 py-2">{r.fiscal_doc_code || "—"}</td>
-                      <td className="border px-2 py-2">{r.issue_date}</td>
-                      <td className="border px-2 py-2">{r.due_date}</td>
-                      <td className="border px-2 py-2">{folioLabel(r.series, r.number)}</td>
-                      <td className="border px-2 py-2">
-                        {ellipsis(r.counterparty_name || r.counterparty_identifier || "—", 40)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="border-t bg-slate-50 px-3 py-2 text-xs text-slate-500">Mostrando 50 filas en preview.</div>
-          </div>
-        ) : null}
-      </Modal>
-
-      <Modal
+      <TradeDocsFiltersModal
         open={filtersOpen}
-        title="Filtros de documentos"
-        subtitle={`Ventas • ${activeTab === "drafts" ? "Borradores" : "Registrados"}`}
+        activeTab={activeTab}
+        filters={listFilters}
+        setFilters={setListFilters}
         onClose={() => setFiltersOpen(false)}
-        widthClass="w-[min(980px,96vw)]"
-        footer={
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-xs text-slate-500">
-              {activeTab === "drafts"
-                ? `${filteredDrafts.length} resultado(s)`
-                : `${filteredRegisteredDocs.length} resultado(s)`}
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                className={theme.btnSoft}
-                onClick={clearListFilters}
-              >
-                Limpiar
-              </button>
-
-              <button
-                type="button"
-                className={theme.btnSoft}
-                onClick={() => setFiltersOpen(false)}
-              >
-                Cerrar
-              </button>
-
-              <button
-                type="button"
-                className={theme.btnPrimary}
-                onClick={() => setFiltersOpen(false)}
-              >
-                Aplicar
-              </button>
-            </div>
-          </div>
+        onClear={clearListFilters}
+        resultCount={
+          activeTab === "drafts"
+            ? filteredDrafts.length
+            : filteredRegisteredDocs.length
         }
-      >
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">
-              Fecha desde
-            </label>
-            <input
-              type="date"
-              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
-              value={listFilters.issue_date_from}
-              onChange={(e) =>
-                setListFilters((f) => ({ ...f, issue_date_from: e.target.value }))
-              }
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">
-              Fecha hasta
-            </label>
-            <input
-              type="date"
-              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
-              value={listFilters.issue_date_to}
-              onChange={(e) =>
-                setListFilters((f) => ({ ...f, issue_date_to: e.target.value }))
-              }
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">
-              Tipo
-            </label>
-            <select
-              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
-              value={listFilters.doc_type}
-              onChange={(e) =>
-                setListFilters((f) => ({ ...f, doc_type: e.target.value }))
-              }
-            >
-              <option value="">Todos</option>
-              <option value="INVOICE">Factura</option>
-              <option value="DEBIT_NOTE">Nota débito</option>
-              <option value="CREDIT_NOTE">Nota crédito</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">
-              Folio
-            </label>
-            <input
-              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
-              value={listFilters.number}
-              onChange={(e) =>
-                setListFilters((f) => ({ ...f, number: e.target.value }))
-              }
-              placeholder="1,2,3 o 1-3"
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">
-              RUT / ID
-            </label>
-            <input
-              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
-              value={listFilters.counterparty_identifier}
-              onChange={(e) =>
-                setListFilters((f) => ({ ...f, counterparty_identifier: e.target.value }))
-              }
-              placeholder="11.111.111-1"
-            />
-          </div>
-
-          <div className="md:col-span-2">
-            <label className="mb-1 block text-xs font-medium text-slate-600">
-              Nombre
-            </label>
-            <input
-              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
-              value={listFilters.counterparty_name}
-              onChange={(e) =>
-                setListFilters((f) => ({ ...f, counterparty_name: e.target.value }))
-              }
-              placeholder="Orlando"
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">
-              Situación
-            </label>
-            <select
-              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
-              value={listFilters.payment_state}
-              onChange={(e) =>
-                setListFilters((f) => ({ ...f, payment_state: e.target.value }))
-              }
-            >
-              <option value="">Todas</option>
-              <option value="PENDIENTE">Pendiente</option>
-              <option value="PAGADO">Pagado</option>
-              <option value="SALDO_A_FAVOR">Saldo a favor</option>
-              <option value="CANCELADO">Cancelado</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">
-              Monto mínimo
-            </label>
-            <input
-              type="number"
-              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
-              value={listFilters.grand_total_min}
-              onChange={(e) =>
-                setListFilters((f) => ({ ...f, grand_total_min: e.target.value }))
-              }
-              placeholder="0"
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">
-              Monto máximo
-            </label>
-            <input
-              type="number"
-              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
-              value={listFilters.grand_total_max}
-              onChange={(e) =>
-                setListFilters((f) => ({ ...f, grand_total_max: e.target.value }))
-              }
-              placeholder="999999"
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">
-              Saldo mínimo
-            </label>
-            <input
-              type="number"
-              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
-              value={listFilters.balance_min}
-              onChange={(e) =>
-                setListFilters((f) => ({ ...f, balance_min: e.target.value }))
-              }
-              placeholder="0"
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">
-              Saldo máximo
-            </label>
-            <input
-              type="number"
-              className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none focus:border-[#123b63]"
-              value={listFilters.balance_max}
-              onChange={(e) =>
-                setListFilters((f) => ({ ...f, balance_max: e.target.value }))
-              }
-              placeholder="999999"
-            />
-          </div>
-        </div>
-      </Modal>
+      />
 
       {/* Modal crear tercero (reutilizable) */}
       <CounterpartyCreateModal

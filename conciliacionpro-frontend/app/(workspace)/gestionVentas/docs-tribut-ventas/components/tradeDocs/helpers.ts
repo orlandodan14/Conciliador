@@ -7,6 +7,7 @@ import type {
   JournalLine,
   PaymentRow,
 } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/types";
+import type { TradeDocListFilters } from "./types";
 
 export function cls(...a: Array<string | false | null | undefined>) {
   return a.filter(Boolean).join(" ");
@@ -298,22 +299,60 @@ function parseNumberFilterTokens(value: string): string[] {
     .filter(Boolean);
 }
 
+function passesNumericFilter(
+  rawValue: number,
+  filter: TradeDocListFilters["grand_total_filter"] | TradeDocListFilters["balance_filter"]
+): boolean {
+  const op = String(filter?.op || "").trim();
+
+  if (!op) return true;
+
+  const value = Number(rawValue || 0);
+  const v1 = Number(filter?.value1 ?? "");
+  const v2 = Number(filter?.value2 ?? "");
+
+  const hasV1 = String(filter?.value1 ?? "").trim() !== "" && Number.isFinite(v1);
+  const hasV2 = String(filter?.value2 ?? "").trim() !== "" && Number.isFinite(v2);
+
+  switch (op) {
+    case "between": {
+      if (!hasV1 && !hasV2) return true;
+      if (hasV1 && hasV2) {
+        const min = Math.min(v1, v2);
+        const max = Math.max(v1, v2);
+        return value >= min && value <= max;
+      }
+      if (hasV1) return value >= v1;
+      if (hasV2) return value <= v2;
+      return true;
+    }
+
+    case "eq":
+      return hasV1 ? value === v1 : true;
+
+    case "neq":
+      return hasV1 ? value !== v1 : true;
+
+    case "gt":
+      return hasV1 ? value > v1 : true;
+
+    case "gte":
+      return hasV1 ? value >= v1 : true;
+
+    case "lt":
+      return hasV1 ? value < v1 : true;
+
+    case "lte":
+      return hasV1 ? value <= v1 : true;
+
+    default:
+      return true;
+  }
+}
+
 export function applyTradeDocFilters(
   rows: any[],
-  filters: {
-    issue_date_from: string;
-    issue_date_to: string;
-    doc_type: string;
-    fiscal_doc_code: string;
-    number: string;
-    counterparty_identifier: string;
-    counterparty_name: string;
-    grand_total_min: string;
-    grand_total_max: string;
-    balance_min: string;
-    balance_max: string;
-    payment_state: string;
-  }
+  filters: TradeDocListFilters
 ) {
   return rows.filter((row) => {
     const issueDate = String(row.issue_date || "");
@@ -367,19 +406,11 @@ export function applyTradeDocFilters(
       if (!counterpartyName.includes(wantedName)) return false;
     }
 
-    if (filters.grand_total_min !== "" && grandTotal < Number(filters.grand_total_min)) {
+    if (!passesNumericFilter(grandTotal, filters.grand_total_filter)) {
       return false;
     }
 
-    if (filters.grand_total_max !== "" && grandTotal > Number(filters.grand_total_max)) {
-      return false;
-    }
-
-    if (filters.balance_min !== "" && balance < Number(filters.balance_min)) {
-      return false;
-    }
-
-    if (filters.balance_max !== "" && balance > Number(filters.balance_max)) {
+    if (!passesNumericFilter(balance, filters.balance_filter)) {
       return false;
     }
 
@@ -391,3 +422,27 @@ export function applyTradeDocFilters(
   });
 }
 
+export const EMPTY_TRADE_DOC_LIST_FILTERS: TradeDocListFilters = {
+  issue_date_from: "",
+  issue_date_to: "",
+  doc_type: "",
+  fiscal_doc_code: "",
+  number: "",
+  counterparty_identifier: "",
+  counterparty_name: "",
+  grand_total_filter: {
+    op: "",
+    value1: "",
+    value2: "",
+  },
+  balance_filter: {
+    op: "",
+    value1: "",
+    value2: "",
+  },
+  payment_state: "",
+};
+
+export function createEmptyTradeDocListFilters(): TradeDocListFilters {
+  return { ...EMPTY_TRADE_DOC_LIST_FILTERS };
+}

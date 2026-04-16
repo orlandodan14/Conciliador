@@ -246,3 +246,32 @@ export type TradeDocTimelineRow = {
   source_doc_id: string | null;
   sort_ts: string | null;
 };
+
+export type TradeDocListFilters = {
+  issue_date_from: string;
+  issue_date_to: string;
+  doc_type: string;
+  fiscal_doc_code: string;
+  number: string;
+  counterparty_identifier: string;
+  counterparty_name: string;
+  grand_total_filter: NumericFilterValue;
+  balance_filter: NumericFilterValue;
+  payment_state: string;
+};
+
+export type NumericFilterOperator =
+  | ""
+  | "between"
+  | "eq"
+  | "neq"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte";
+
+export type NumericFilterValue = {
+  op: NumericFilterOperator;
+  value1: string;
+  value2: string;
+};
