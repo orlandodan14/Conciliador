@@ -71,22 +71,61 @@ export function isReverseNoteDocType(docType: DocType) {
   return docType === "CREDIT_NOTE";
 }
 
-export function buildJournalDescriptionFromHeader(h: DocHeader) {
-  const typeLabel = getJournalDocTypeLabel(h.doc_type);
-  const ownFolio = folioLabel(h.series, h.number);
+export function buildTradeDocDocLabelFromHeader(header: {
+  doc_type: string;
+  fiscal_doc_code?: string | null;
+  series?: string | null;
+  number?: string | null;
+}) {
+  const code = String(header.fiscal_doc_code || "").trim();
+  const number = String(header.number || "").trim();
+  const folio = [code, number].filter(Boolean).join("-");
 
-  const parts: string[] = [typeLabel];
-
-  if (ownFolio !== "—") {
-    parts.push(`Folio ${ownFolio}`);
+  if (String(header.doc_type || "").toUpperCase() === "INVOICE") {
+    return `Factura ${folio || "s/f"}`;
   }
 
-  const isNote = h.doc_type === "DEBIT_NOTE" || h.doc_type === "CREDIT_NOTE";
-  if (isNote && String(h.origin_label || "").trim()) {
-    parts.push(`Afecta ${String(h.origin_label).trim()}`);
+  if (String(header.doc_type || "").toUpperCase() === "CREDIT_NOTE") {
+    return `Nota de crédito ${folio || "s/f"}`;
   }
 
-  return parts.join(" - ");
+  if (String(header.doc_type || "").toUpperCase() === "DEBIT_NOTE") {
+    return `Nota de débito ${folio || "s/f"}`;
+  }
+
+  return folio || "Documento";
+}
+
+export function buildJournalEntryDescriptionFromHeader(header: {
+  doc_type: string;
+  fiscal_doc_code?: string | null;
+  series?: string | null;
+  number?: string | null;
+}) {
+  return buildTradeDocDocLabelFromHeader(header);
+}
+
+export function buildJournalLineDescriptionFromHeader(header: {
+  doc_type: string;
+  fiscal_doc_code?: string | null;
+  series?: string | null;
+  number?: string | null;
+  origin_fiscal_doc_code?: string | null;
+  origin_label?: string | null;
+}) {
+  const base = buildTradeDocDocLabelFromHeader(header);
+  const originCode = String(header.origin_fiscal_doc_code || "").trim();
+  const originLabel = String(header.origin_label || "").trim();
+  const originFolio = [originCode, originLabel].filter(Boolean).join("-");
+
+  if (
+    ["CREDIT_NOTE", "DEBIT_NOTE"].includes(String(header.doc_type || "").toUpperCase()) &&
+    originFolio
+  ) {
+    return `${base} - Afecta ${originFolio}`;
+  }
+
+  return base;
 }
 
 export function ellipsis(s: string, max: number) {

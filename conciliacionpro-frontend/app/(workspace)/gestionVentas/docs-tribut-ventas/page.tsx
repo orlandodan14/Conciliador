@@ -37,7 +37,8 @@ import {
   normalizeFolioPart,
   hasFiscalFolioData,
   isReverseNoteDocType,
-  buildJournalDescriptionFromHeader,
+  buildJournalEntryDescriptionFromHeader,
+  buildJournalLineDescriptionFromHeader,
   ellipsis,
   normalizeIdentifier,
   calcLineAmounts,
@@ -50,6 +51,7 @@ import {
   getTradeDocSuggestion,
   getTradeDocPaymentState,
   applyTradeDocFilters,
+  getDefaultFiscalDocTypeIdByDocType,
 } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/helpers";
 import {
   findDuplicateFiscalFolio,
@@ -1413,7 +1415,7 @@ export default function Page() {
 
   function buildJournalFromDoc(): { lines: JournalLine[]; error?: string } {
     const tol = 0.5;
-    const docGlosa = buildJournalDescriptionFromHeader(header);
+    const docGlosa = buildJournalLineDescriptionFromHeader(header);
     const isReverse = isReverseNoteDocType(header.doc_type);
 
     const usedDocLines = getUsedDocLines();
@@ -2447,6 +2449,17 @@ export default function Page() {
         throw new Error("El documento debe tener al menos 1 línea con descripción, SKU o monto.");
       }
 
+      const normalizedFiscalDocCode = normalizeFolioPart(header.fiscal_doc_code || "");
+
+      const resolvedFiscalDocTypeId =
+        fiscalDocTypes.find(
+          (t) =>
+            t.is_active &&
+            normalizeFolioPart(t.code) === normalizedFiscalDocCode
+        )?.id ||
+        getDefaultFiscalDocTypeIdByDocType(header.doc_type, fiscalCfg) ||
+        null;
+
       const headerPayloadFull: any = {
         company_id: companyId,
         doc_type: header.doc_type,
@@ -2457,6 +2470,7 @@ export default function Page() {
         number: header.number || null,
         currency_code: header.currency_code,
         branch_id: header.branch_id || null,
+        fiscal_doc_type_id: resolvedFiscalDocTypeId,
         fiscal_doc_code: header.fiscal_doc_code || null,
         counterparty_id: (() => {
           const key = normalizeIdentifier(header.counterparty_identifier || "");
@@ -2594,7 +2608,7 @@ export default function Page() {
         companyId,
         docId: savedId,
         entryDate: header.issue_date,
-        description: buildJournalDescriptionFromHeader(header),
+        description: buildJournalEntryDescriptionFromHeader(header),
         reference: header.reference || null,
         currencyCode: header.currency_code || baseCurrency,
         userId,
@@ -2630,7 +2644,7 @@ export default function Page() {
 
       const journalLineRows = result.lines.map((rawLine, idx) => {
         const l = normalizeLineDimensionsByPolicy(rawLine);
-        const defaultJournalDescription = buildJournalDescriptionFromHeader(header);
+        const defaultJournalDescription = buildJournalLineDescriptionFromHeader(header);
 
         const acc = accByCode[String(l.account_code).trim()];
         if (!acc?.id) {
@@ -3765,8 +3779,10 @@ export default function Page() {
     setImportPreview([]);
     setImportOpen(true);
   }
+  
   function closeImport() {
     setImportOpen(false);
+    (window as any).__tradeDocImportParsed = null;
   }
 
   async function onPickExcel(file: File) {
@@ -3777,92 +3793,329 @@ export default function Page() {
       const ab = await file.arrayBuffer();
       const wb = XLSX.read(ab, { type: "array" });
 
-      const ws = wb.Sheets["Ventas"] || wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: "" }) as any[];
+      const wsDocs = wb.Sheets["DOCUMENTOS"];
+      const wsLines = wb.Sheets["LINEAS"];
+      const wsPayments = wb.Sheets["PAGOS"];
 
-      const cleaned = rows
-        .map((r) => ({
-          doc_type: String(r.doc_type || r.DocType || r.tipo || "INVOICE").toUpperCase(),
-          fiscal_doc_code: String(r.fiscal_doc_code || r.fiscal || r.codigo_fiscal || "").trim(),
-          issue_date: String(r.issue_date || r.emision || r.fecha_emision || todayISO()).slice(0, 10),
-          due_date: String(r.due_date || r.vencimiento || r.fecha_vencimiento || r.issue_date || todayISO()).slice(0, 10),
-          series: String(r.series || r.serie || "").trim(),
-          number: String(r.number || r.folio || r.numero || "").trim(),
-          currency_code: String(r.currency_code || r.moneda || baseCurrency || "CLP").toUpperCase(),
-          counterparty_identifier: String(r.counterparty_identifier || r.rut || r.rfc || r.nit || "").trim(),
-          counterparty_name: String(r.counterparty_name || r.nombre || r.razon_social || "").trim(),
-          reference: String(r.reference || r.referencia || "").trim(),
-        }))
-        .filter((x) => x.counterparty_identifier || x.counterparty_name || x.number || x.series);
-      
-      const mapped = cleaned.map((x) => ({
-        ...x,
-        doc_type:
-          x.doc_type === "NC" ? "CREDIT_NOTE" :
-          x.doc_type === "ND" ? "DEBIT_NOTE" :
-          x.doc_type === "FACTURA" || x.doc_type === "BOLETA" ? "INVOICE" :
-          x.doc_type,
-      }));
+      if (!wsDocs) throw new Error("Falta la hoja DOCUMENTOS.");
+      if (!wsLines) throw new Error("Falta la hoja LINEAS.");
+      if (!wsPayments) throw new Error("Falta la hoja PAGOS.");
+
+      const rawDocs = XLSX.utils.sheet_to_json(wsDocs, { defval: "" }) as any[];
+      const rawLines = XLSX.utils.sheet_to_json(wsLines, { defval: "" }) as any[];
+      const rawPayments = XLSX.utils.sheet_to_json(wsPayments, { defval: "" }) as any[];
+
+      const normalizeDate = (v: any) => {
+        if (!v) return "";
+        if (typeof v === "number") {
+          const d = XLSX.SSF.parse_date_code(v);
+          if (!d) return "";
+          const mm = String(d.m).padStart(2, "0");
+          const dd = String(d.d).padStart(2, "0");
+          return `${d.y}-${mm}-${dd}`;
+        }
+        return String(v).slice(0, 10);
+      };
+
+      const normalizeDocType = (v: any): DocType => {
+        const x = String(v || "").trim().toUpperCase();
+        if (["INVOICE", "FACTURA", "FACT", "33", "34", "39", "41"].includes(x)) return "INVOICE";
+        if (["DEBIT_NOTE", "ND", "NOTA_DEBITO", "NOTA DE DEBITO", "56"].includes(x)) return "DEBIT_NOTE";
+        if (["CREDIT_NOTE", "NC", "NOTA_CREDITO", "NOTA DE CREDITO", "61"].includes(x)) return "CREDIT_NOTE";
+        return "INVOICE";
+      };
+
+      const docs = rawDocs.map((r, idx) => {
+        const fiscalDocCode = String(
+          r.fiscal_doc_code ?? r.codigo_fiscal ?? r.tipo_dte ?? ""
+        ).trim();
+
+        const number = String(
+          r.number ?? r.numero ?? r.folio ?? ""
+        ).trim();
+
+        const docKey = `${fiscalDocCode}-${number}`;
+
+        return {
+          source_row_no: idx + 2,
+          doc_key: docKey,
+          doc_type: normalizeDocType(r.doc_type ?? r.tipo ?? r.doc_type_code),
+          fiscal_doc_code: fiscalDocCode,
+          issue_date: normalizeDate(r.issue_date ?? r.fecha_emision),
+          due_date: normalizeDate(r.due_date ?? r.fecha_vencimiento ?? r.issue_date ?? r.fecha_emision),
+          series: String(r.series ?? r.serie ?? "").trim(),
+          number,
+          currency_code: String(r.currency_code ?? r.moneda ?? baseCurrency ?? "CLP").trim().toUpperCase(),
+          branch_code: String(r.branch_code ?? r.sucursal ?? r.branch ?? "").trim(),
+          counterparty_identifier: String(
+            r.counterparty_identifier ?? r.rut ?? r.rfc ?? r.nit ?? ""
+          ).trim(),
+          counterparty_name: String(
+            r.counterparty_name ?? r.nombre ?? r.razon_social ?? ""
+          ).trim(),
+          reference: String(r.reference ?? r.referencia ?? "").trim(),
+          origin_fiscal_doc_code: String(
+            r.origin_fiscal_doc_code ?? r.codigo_fiscal_origen ?? ""
+          ).trim(),
+          origin_series: String(
+            r.origin_series ?? r.serie_origen ?? ""
+          ).trim(),
+          origin_number: String(
+            r.origin_number ?? r.numero_origen ?? r.folio_origen ?? ""
+          ).trim(),
+        };
+      });
+
+      const lines = rawLines.map((r, idx) => {
+        const fiscalDocCode = String(
+          r.fiscal_doc_code ?? r.codigo_fiscal ?? ""
+        ).trim();
+
+        const number = String(
+          r.number ?? r.numero ?? r.folio ?? ""
+        ).trim();
+
+        const isTaxableRaw = String(
+          r.is_taxable ?? r.afecto ?? r.grava_iva ?? "true"
+        )
+          .trim()
+          .toLowerCase();
+
+        const isTaxable =
+          isTaxableRaw === "true" ||
+          isTaxableRaw === "1" ||
+          isTaxableRaw === "si" ||
+          isTaxableRaw === "sí" ||
+          isTaxableRaw === "afecto";
+
+        const taxRate = Number(r.tax_rate ?? r.tasa_impuesto ?? 0);
+        const ex = Number(r.monto_exento ?? r.exempt_amount ?? 0);
+        const af = Number(r.monto_afecto ?? r.taxable_amount ?? 0);
+        const total = Number(r.monto_total ?? r.line_total ?? r.total_linea ?? 0);
+
+        const iva =
+          r.tax_amount != null && r.tax_amount !== ""
+            ? Number(r.tax_amount)
+            : isTaxable && taxRate > 0
+            ? Math.round(af * (taxRate / 100))
+            : 0;
+
+        return {
+          doc_key: `${fiscalDocCode}-${number}`,
+          line_no: Number(r.line_no ?? r.linea ?? idx + 1),
+          sku: String(r.sku ?? "").trim(),
+          description: String(r.description ?? r.descripcion ?? "").trim(),
+
+          qty: String(r.qty ?? r.cantidad ?? 0),
+          unit_price: String(r.unit_price ?? r.precio_unitario ?? 0),
+
+          is_taxable: isTaxable,
+          tax_rate: String(taxRate),
+
+          ex_override: ex > 0 ? String(ex) : "",
+          af_override: af > 0 ? String(af) : "",
+          iva_override: iva > 0 ? String(iva) : "",
+          total_override: total > 0 ? String(total) : "",
+        };
+      });
+
+      const payments = rawPayments
+        .map((r, idx) => {
+          const fiscalDocCode = String(
+            r.fiscal_doc_code ?? r.codigo_fiscal ?? ""
+          ).trim();
+
+          const number = String(
+            r.number ?? r.numero ?? r.folio ?? ""
+          ).trim();
+
+          if (!fiscalDocCode || !number) return null;
+
+          return {
+            doc_key: `${fiscalDocCode}-${number}`,
+            payment_no: Number(r.payment_no ?? r.nro_pago ?? idx + 1),
+            payment_date: normalizeDate(r.payment_date ?? r.fecha_pago),
+            method: String(r.method ?? r.metodo ?? "").trim().toUpperCase(),
+            reference: String(r.reference ?? r.referencia ?? "").trim(),
+            card_kind: String(r.card_kind ?? r.tipo_tarjeta ?? "").trim().toUpperCase(),
+            card_last4: String(r.card_last4 ?? r.ultimos4 ?? "").trim(),
+            auth_code: String(r.auth_code ?? r.codigo_autorizacion ?? "").trim(),
+            amount: Number(r.amount ?? r.monto ?? 0),
+          };
+        })
+        .filter(Boolean) as any[];
 
       const errs: string[] = [];
-      mapped.forEach((x, i) => {
-        if (!x.doc_type) errs.push(`Fila ${i + 2}: doc_type vacío.`);
-        if (!x.issue_date) errs.push(`Fila ${i + 2}: issue_date vacío.`);
-        if (fiscalCfg.enabled && fiscalCfg.require_sales && !x.fiscal_doc_code) {
-          errs.push(`Fila ${i + 2}: fiscal_doc_code obligatorio según configuración.`);
+
+      docs.forEach((d, i) => {
+        if (!d.fiscal_doc_code) errs.push(`DOCUMENTOS fila ${i + 2}: fiscal_doc_code vacío.`);
+        if (!d.number) errs.push(`DOCUMENTOS fila ${i + 2}: number vacío.`);
+        if (!d.issue_date) errs.push(`DOCUMENTOS fila ${i + 2}: issue_date vacío.`);
+        if (!d.due_date) errs.push(`DOCUMENTOS fila ${i + 2}: due_date vacío.`);
+        if (!d.currency_code) errs.push(`DOCUMENTOS fila ${i + 2}: currency_code vacío.`);
+        if (!d.branch_code) errs.push(`DOCUMENTOS fila ${i + 2}: branch_code vacío.`);
+        if (!d.counterparty_identifier) errs.push(`DOCUMENTOS fila ${i + 2}: counterparty_identifier vacío.`);
+        if (!d.counterparty_name) errs.push(`DOCUMENTOS fila ${i + 2}: counterparty_name vacío.`);
+      });
+
+      lines.forEach((l, i) => {
+        if (!l.doc_key) errs.push(`LINEAS fila ${i + 2}: doc_key inválido.`);
+        if (!l.description) errs.push(`LINEAS fila ${i + 2}: description vacía.`);
+        if (Number(l.qty || 0) <= 0) errs.push(`LINEAS fila ${i + 2}: qty debe ser mayor a 0.`);
+        if (Number(l.unit_price || 0) < 0) errs.push(`LINEAS fila ${i + 2}: unit_price no puede ser negativo.`);
+
+        const ex = Number(l.ex_override || 0);
+        const af = Number(l.af_override || 0);
+        const iva = Number(l.iva_override || 0);
+        const total = Number(l.total_override || 0);
+
+        if (Math.abs((ex + af + iva) - total) > 1) {
+          errs.push(`LINEAS fila ${i + 2}: los montos no cuadran.`);
         }
       });
 
       setImportErrors(errs);
-      setImportPreview(mapped.slice(0, 200));
+
+      setImportPreview(
+        docs.slice(0, 200).map((d) => ({
+          ...d,
+          lines_count: lines.filter((x) => x.doc_key === d.doc_key).length,
+          payments_count: payments.filter((x) => x.doc_key === d.doc_key).length,
+        }))
+      );
+
+      (window as any).__tradeDocImportParsed = {
+        fileName: file.name,
+        docs,
+        lines,
+        payments,
+      };
     } catch (e: any) {
       setImportErrors([e?.message || "No se pudo leer el archivo."]);
+      setImportPreview([]);
+      (window as any).__tradeDocImportParsed = null;
     }
   }
 
   async function confirmImportToDrafts() {
     if (!companyId || !canEdit) return;
-    if (importErrors.length) return;
-    if (!importPreview.length) return;
+
+    const parsed = (window as any).__tradeDocImportParsed;
+    if (!parsed) {
+      setMessages([{ level: "error", text: "Primero debes cargar un archivo válido." }]);
+      return;
+    }
+
+    if (importErrors.length > 0) {
+      setMessages([{ level: "error", text: "Corrige los errores del archivo antes de importar." }]);
+      return;
+    }
 
     setImporting(true);
+
     try {
-      const payload = importPreview.map((x) => ({
-        company_id: companyId,
-        doc_type: x.doc_type,
-        status: "BORRADOR",
-        issue_date: x.issue_date || todayISO(),
-        due_date: x.due_date || x.issue_date || todayISO(),
-        series: x.series || null,
-        number: x.number || null,
-        currency_code: x.currency_code || baseCurrency,
-        branch_id: branches.find((b) => b.is_default)?.id || branches[0]?.id || null,
-        fiscal_doc_code: x.fiscal_doc_code || null,
+      const { data: jobId, error: jobError } = await supabase.rpc("create_trade_doc_import_job", {
+        _company_id: companyId,
+        _source: "EXCEL",
+        _file_name: parsed.fileName || null,
+      });
 
-        counterparty_id: null,
-        counterparty_identifier_snapshot: x.counterparty_identifier || null,
-        counterparty_name_snapshot: x.counterparty_name || null,
-        reference: x.reference || null,
+      if (jobError) throw jobError;
+      if (!jobId) throw new Error("No se pudo crear el job de importación.");
 
-        net_taxable: 0,
-        net_exempt: 0,
-        tax_total: 0,
-        grand_total: 0,
-      }));
+      const chunkSize = 300;
 
-      const chunkSize = 200;
-      for (let i = 0; i < payload.length; i += chunkSize) {
-        const chunk = payload.slice(i, i + chunkSize);
-        const { error } = await supabase.from("trade_docs").insert(chunk as any);
-        if (error) throw error;
+      for (let i = 0; i < parsed.docs.length; i += chunkSize) {
+        const docsChunk = parsed.docs.slice(i, i + chunkSize);
+
+        const docKeys = new Set(docsChunk.map((d: any) => d.doc_key));
+
+        const linesChunk = parsed.lines
+          .filter((l: any) => docKeys.has(l.doc_key))
+          .map((l: any) => {
+            const taxRate = Number(l.tax_rate || 0);
+            const exemptAmount = Number(l.ex_override || 0);
+            const taxableAmount = Number(l.af_override || 0);
+            const taxAmount = Number(l.iva_override || 0);
+            const lineTotal = Number(l.total_override || 0);
+
+            return {
+              doc_key: l.doc_key,
+              line_no: Number(l.line_no || 0),
+              sku: String(l.sku || "").trim(),
+              description: String(l.description || "").trim(),
+              qty: Number(l.qty || 0),
+              unit_price: Number(l.unit_price || 0),
+              tax_kind: l.is_taxable ? "AFECTO" : "EXENTO",
+              tax_rate: taxRate,
+              exempt_amount: exemptAmount,
+              taxable_amount: taxableAmount,
+              tax_amount: taxAmount,
+              line_total: lineTotal,
+            };
+          });
+
+        const paymentsChunk = parsed.payments.filter((p: any) => docKeys.has(p.doc_key));
+
+        const { error: appendError } = await supabase.rpc("append_trade_doc_import_batch", {
+          _job_id: jobId,
+          _company_id: companyId,
+          _docs: docsChunk,
+          _lines: linesChunk,
+          _payments: paymentsChunk,
+        });
+
+        if (appendError) throw appendError;
       }
 
-      setMessages([{ level: "warn", text: `Carga masiva OK: ${payload.length} borradores creados.` }]);
+      const { data: processResult, error: processError } = await supabase.rpc("process_trade_doc_import_job", {
+        _job_id: jobId,
+        _company_id: companyId,
+      });
+
+      if (processError) throw processError;
+
+      const { data: detailResult, error: detailError } = await supabase.rpc("get_trade_doc_import_job_result", {
+        _job_id: jobId,
+        _company_id: companyId,
+      });
+
+      if (detailError) throw detailError;
+
+      const job = (detailResult as any)?.job || {};
+      const results = Array.isArray((detailResult as any)?.results) ? (detailResult as any).results : [];
+
+      const okDocs = Number(job.ok_docs || 0);
+      const errorDocs = Number(job.error_docs || 0);
+
+      const resultMessages: Array<{ level: "error" | "warn"; text: string }> = [];
+
+      resultMessages.push({
+        level: "warn",
+        text: `Carga masiva finalizada. OK: ${okDocs}. Con error: ${errorDocs}.`,
+      });
+
+      results
+        .filter((r: any) => r.status === "ERROR")
+        .slice(0, 10)
+        .forEach((r: any) => {
+          resultMessages.push({
+            level: "error",
+            text: `${r.doc_key || "Documento"}: ${r.message || "Error de importación"}`,
+          });
+        });
+
+      setMessages(resultMessages);
+
       closeImport();
-      await loadDrafts();
-      await loadRegisteredDocs();
+      await loadDrafts(true);
+      await loadRegisteredDocs(true);
+
+      (window as any).__tradeDocImportParsed = null;
     } catch (e: any) {
-      setMessages([{ level: "error", text: e?.message || "No se pudo importar." }]);
+      setMessages([
+        { level: "error", text: e?.message || "No se pudo completar la importación masiva." },
+      ]);
     } finally {
       setImporting(false);
     }

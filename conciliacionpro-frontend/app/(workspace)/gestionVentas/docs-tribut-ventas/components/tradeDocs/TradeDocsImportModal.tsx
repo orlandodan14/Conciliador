@@ -1,8 +1,8 @@
 "use client";
 
-import React from "react";
+import React, { useMemo, useState } from "react";
 import BaseModal from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/BaseModal";
-import { cls, ellipsis, folioLabel } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/helpers";
+import { cls, folioLabel } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/helpers";
 import { tradeDocsTheme } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/ui";
 
 type Props = {
@@ -26,13 +26,22 @@ export default function TradeDocsImportModal({
   onConfirm,
   onPickExcel,
 }: Props) {
+  const [selectedFileName, setSelectedFileName] = useState("");
+
+  const summary = useMemo(() => {
+    const docs = importPreview.length;
+    const lines = importPreview.reduce((acc, r) => acc + Number(r.lines_count || 0), 0);
+    const payments = importPreview.reduce((acc, r) => acc + Number(r.payments_count || 0), 0);
+    return { docs, lines, payments };
+  }, [importPreview]);
+
   return (
     <BaseModal
       open={open}
       title="Carga masiva"
       subtitle="Ventas • Excel → Borradores"
       onClose={onClose}
-      widthClass="w-[min(900px,96vw)]"
+      widthClass="w-[min(1100px,96vw)]"
       footer={
         <div className="flex items-center justify-between gap-2">
           <button className={tradeDocsTheme.btnSoft} onClick={onClose} disabled={importing}>
@@ -53,89 +62,171 @@ export default function TradeDocsImportModal({
         </div>
       }
     >
-      <div className="rounded-2xl border bg-slate-50 p-3 text-sm text-slate-700">
-        Sube un Excel con columnas:{" "}
-        <b>
-          doc_type, fiscal_doc_code, issue_date, due_date, series, number, currency_code,
-          counterparty_identifier, counterparty_name, reference
-        </b>
-        .
-        <div className="mt-1 text-xs text-slate-500">Hoja recomendada: “Ventas”.</div>
-      </div>
-
-      <div className="mt-3">
-        <input
-          type="file"
-          accept=".xlsx,.xls,.csv"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) onPickExcel(f);
-            e.currentTarget.value = "";
-          }}
-        />
-      </div>
-
-      {importErrors.length ? (
-        <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
-          <b>Errores:</b>
-          <ul className="mt-2 list-disc pl-5">
-            {importErrors.slice(0, 12).map((x, i) => (
-              <li key={i}>{x}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      {importPreview.length ? (
-        <div className="mt-3 overflow-hidden rounded-2xl border">
-          <div className="bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            Preview ({importPreview.length} filas)
+      <div className="space-y-4">
+        <div className="rounded-2xl border bg-slate-50 p-4 text-sm text-slate-700">
+          <div className="font-semibold text-slate-900">Formato esperado del archivo</div>
+          <div className="mt-2">
+            El Excel debe venir con estas hojas:
+            <span className="ml-1 font-bold">DOCUMENTOS</span>,
+            <span className="ml-1 font-bold">LINEAS</span> y
+            <span className="ml-1 font-bold">PAGOS</span>.
           </div>
 
-          <div className="max-h-[360px] overflow-y-auto overflow-x-hidden">
-            <table className="w-full table-fixed border-collapse text-sm">
-              <colgroup>
-                <col style={{ width: "14%" }} />
-                <col style={{ width: "10%" }} />
-                <col style={{ width: "16%" }} />
-                <col style={{ width: "16%" }} />
-                <col style={{ width: "12%" }} />
-                <col style={{ width: "32%" }} />
-              </colgroup>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <div className="rounded-xl border bg-white p-3">
+              <div className="text-xs font-extrabold uppercase tracking-wide text-slate-500">
+                DOCUMENTOS
+              </div>
+              <div className="mt-2 text-xs text-slate-700">
+                doc_type, fiscal_doc_code, issue_date, due_date, series, number, currency_code,
+                branch_code, counterparty_identifier, counterparty_name, reference,
+                origin_fiscal_doc_code, origin_series, origin_number
+              </div>
+            </div>
 
-              <thead>
-                <tr className="bg-white">
-                  <th className="border px-2 py-2 text-left">doc_type</th>
-                  <th className="border px-2 py-2 text-left">fiscal</th>
-                  <th className="border px-2 py-2 text-left">issue</th>
-                  <th className="border px-2 py-2 text-left">due</th>
-                  <th className="border px-2 py-2 text-left">folio</th>
-                  <th className="border px-2 py-2 text-left">counterparty</th>
-                </tr>
-              </thead>
+            <div className="rounded-xl border bg-white p-3">
+              <div className="text-xs font-extrabold uppercase tracking-wide text-slate-500">
+                LINEAS
+              </div>
+              <div className="mt-2 text-xs text-slate-700">
+                fiscal_doc_code, number, line_no, sku, description, qty, unit_price, tax_kind,
+                tax_rate, exempt_amount, taxable_amount, tax_amount, line_total
+              </div>
+            </div>
 
-              <tbody>
-                {importPreview.slice(0, 50).map((r, i) => (
-                  <tr key={i} className="hover:bg-sky-50/30">
-                    <td className="border px-2 py-2">{r.doc_type}</td>
-                    <td className="border px-2 py-2">{r.fiscal_doc_code || "—"}</td>
-                    <td className="border px-2 py-2">{r.issue_date}</td>
-                    <td className="border px-2 py-2">{r.due_date}</td>
-                    <td className="border px-2 py-2">{folioLabel(r.series, r.number)}</td>
-                    <td className="border px-2 py-2">
-                      {ellipsis(r.counterparty_name || r.counterparty_identifier || "—", 40)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="border-t bg-slate-50 px-3 py-2 text-xs text-slate-500">
-            Mostrando 50 filas en preview.
+            <div className="rounded-xl border bg-white p-3">
+              <div className="text-xs font-extrabold uppercase tracking-wide text-slate-500">
+                PAGOS
+              </div>
+              <div className="mt-2 text-xs text-slate-700">
+                fiscal_doc_code, number, payment_no, payment_date, method, reference, card_kind,
+                card_last4, auth_code, amount
+              </div>
+            </div>
           </div>
         </div>
-      ) : null}
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-slate-900">Seleccionar archivo</div>
+              <div className="text-xs text-slate-500">
+                Sube un Excel .xlsx, .xls o .csv
+              </div>
+            </div>
+
+            <label
+              className={cls(
+                "inline-flex cursor-pointer items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold shadow-sm transition",
+                canEdit
+                  ? "bg-[#123b63] text-white hover:bg-[#0f3255]"
+                  : "cursor-not-allowed bg-slate-200 text-slate-500"
+              )}
+            >
+              Elegir archivo
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                className="hidden"
+                disabled={!canEdit || importing}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) {
+                    setSelectedFileName(f.name);
+                    onPickExcel(f);
+                  } else {
+                    setSelectedFileName("");
+                  }
+                  e.currentTarget.value = "";
+                }}
+              />
+            </label>
+          </div>
+
+          <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-3 text-sm text-slate-700">
+            {selectedFileName ? (
+              <span>
+                Archivo seleccionado: <b>{selectedFileName}</b>
+              </span>
+            ) : (
+              <span className="text-slate-500">Aún no has seleccionado ningún archivo.</span>
+            )}
+          </div>
+        </div>
+
+        {importErrors.length ? (
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+            <b>Errores detectados:</b>
+            <ul className="mt-2 list-disc pl-5">
+              {importErrors.slice(0, 12).map((x, i) => (
+                <li key={i}>{x}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {importPreview.length ? (
+          <>
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-2xl border bg-slate-50 p-3">
+                <div className="text-xs font-extrabold uppercase tracking-wide text-slate-500">
+                  Documentos
+                </div>
+                <div className="mt-1 text-2xl font-black text-slate-900">{summary.docs}</div>
+              </div>
+
+              <div className="rounded-2xl border bg-slate-50 p-3">
+                <div className="text-xs font-extrabold uppercase tracking-wide text-slate-500">
+                  Líneas
+                </div>
+                <div className="mt-1 text-2xl font-black text-slate-900">{summary.lines}</div>
+              </div>
+
+              <div className="rounded-2xl border bg-slate-50 p-3">
+                <div className="text-xs font-extrabold uppercase tracking-wide text-slate-500">
+                  Pagos
+                </div>
+                <div className="mt-1 text-2xl font-black text-slate-900">{summary.payments}</div>
+              </div>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border">
+              <div className="bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
+                Vista previa ({importPreview.length} documentos)
+              </div>
+
+              <div className="max-h-[340px] overflow-auto">
+                <table className="min-w-full text-sm">
+                  <thead className="sticky top-0 bg-white">
+                    <tr className="border-b text-left text-xs uppercase tracking-wide text-slate-500">
+                      <th className="px-3 py-2">Tipo</th>
+                      <th className="px-3 py-2">Código</th>
+                      <th className="px-3 py-2">Folio</th>
+                      <th className="px-3 py-2">Cliente</th>
+                      <th className="px-3 py-2">Sucursal</th>
+                      <th className="px-3 py-2 text-right">Líneas</th>
+                      <th className="px-3 py-2 text-right">Pagos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importPreview.map((r, i) => (
+                      <tr key={`${r.doc_key}-${i}`} className="border-b last:border-b-0">
+                        <td className="px-3 py-2">{r.doc_type}</td>
+                        <td className="px-3 py-2">{r.fiscal_doc_code || "—"}</td>
+                        <td className="px-3 py-2">{folioLabel(r.series, r.number)}</td>
+                        <td className="px-3 py-2">{r.counterparty_name || "—"}</td>
+                        <td className="px-3 py-2">{r.branch_code || "—"}</td>
+                        <td className="px-3 py-2 text-right">{r.lines_count || 0}</td>
+                        <td className="px-3 py-2 text-right">{r.payments_count || 0}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        ) : null}
+      </div>
     </BaseModal>
   );
 }
