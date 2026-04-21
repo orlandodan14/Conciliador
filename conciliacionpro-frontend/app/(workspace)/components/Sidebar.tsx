@@ -39,7 +39,7 @@ export default function Sidebar({ collapsed, onToggle }: Props) {
         items: [
           { type: "link", label: "Clientes", href: "/gestionVentas/clientes" },
           { type: "link", label: "Doc. Tributarios Ventas", href: "/gestionVentas/docs-tribut-ventas" },
-          { type: "link", label: "Otros Docs. Ingresos", href: "/gestionVentas/otros-docs-ventas" },
+          { type: "link", label: "Otros Docs. Ingresos", href: "/gestionVentas/otros-docs-ingresos" },
           { type: "link", label: "Cobros", href: "/gestionVentas/cobranza" },
         ],
       },

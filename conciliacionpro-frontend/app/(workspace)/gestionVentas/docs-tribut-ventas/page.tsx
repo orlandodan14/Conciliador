@@ -83,6 +83,7 @@ import {
   createEmptyTradeDocListFilters,
 } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/helpers";
 import type { TradeDocListFilters } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/types";
+import TradeDocCancelModal from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocCancelModal";
 
 /**
  * =========================
@@ -204,6 +205,28 @@ export default function Page() {
     const [viewerJournalLines, setViewerJournalLines] = useState<JournalLine[]>(
       Array.from({ length: 4 }, (_, i) => makeJournalLine(i + 1))
     );
+
+    const [cancelModalOpen, setCancelModalOpen] = useState(false);
+    const [cancelMode, setCancelMode] = useState<"editor" | "viewer">("editor");
+    const [cancelTargetDocId, setCancelTargetDocId] = useState<string | null>(null);
+    const [cancelDate, setCancelDate] = useState(todayISO());
+    const [cancelReason, setCancelReason] = useState("");
+    const [cancelPreviewLines, setCancelPreviewLines] = useState<JournalLine[]>([]);
+    const [cancelLoadingPreview, setCancelLoadingPreview] = useState(false);
+    const [cancelSubmitting, setCancelSubmitting] = useState(false);
+    const [cancelSourceJournalEntryId, setCancelSourceJournalEntryId] = useState<string | null>(null);
+    const [cancelDocInfo, setCancelDocInfo] = useState<{
+    doc_type: string;
+    fiscal_doc_code: string;
+    series: string;
+    number: string;
+    issue_date: string;
+    counterparty_identifier: string;
+    counterparty_name: string;
+    currency_code: string;
+    grand_total: number;
+    status: string;
+  } | null>(null);
 
   const [header, setHeader] = useState<DocHeader>({
     doc_type: "INVOICE",
@@ -2970,91 +2993,329 @@ export default function Page() {
     });
   }
 
-  async function cancelDocMVP() {
-    // ✅ Seguridad extra: solo permitir si está configurado y si está VIGENTE
-    if (!allowCancelSales) {
-      setMessages([{ level: "error", text: "La empresa tiene deshabilitada la cancelación de ventas." }]);
-      return;
-    }
-    if (header.status !== "VIGENTE") {
+  async function openCancelFlow(args: {
+    mode: "editor" | "viewer";
+    tradeDocId: string;
+    status: string;
+    cancelledAt?: string | null;
+    cancelReason?: string | null;
+  }) {
+    if (!companyId) return;
+    if (!canEdit) return;
+
+    if (args.status !== "VIGENTE") {
       setMessages([{ level: "error", text: "Solo puedes cancelar documentos VIGENTES." }]);
       return;
     }
-
-    if (!companyId || !docId || !canEdit) return;
-
-    const ok = confirm("¿Cancelar este documento? Se guardará fecha y motivo.");
-    if (!ok) return;
+    setCancelDocInfo(null);
+    setCancelMode(args.mode);
+    setCancelTargetDocId(args.tradeDocId);
+    setCancelDate(args.cancelledAt || todayISO());
+    setCancelReason(args.cancelReason || "");
+    setCancelPreviewLines([]);
+    setCancelSourceJournalEntryId(null);
+    setCancelLoadingPreview(true);
+    setCancelModalOpen(true);
 
     try {
-      const cancelled_at = header.cancelled_at || todayISO();
-
-      const { error } = await supabase
+      const { data: docRow, error: docError } = await supabase
         .from("trade_docs")
-        .update({
-          status: "CANCELADO",
-          cancelled_at,
-          cancel_reason: header.cancel_reason || null,
-        })
+        .select("id,journal_entry_id,doc_type,fiscal_doc_code,series,number,issue_date,reference,counterparty_identifier_snapshot,counterparty_name_snapshot,currency_code,grand_total,status")
         .eq("company_id", companyId)
-        .eq("id", docId);
+        .eq("id", args.tradeDocId)
+        .single();
 
-      if (error) throw error;
+      if (docError) throw docError;
 
-      setHeaderPatch({ status: "CANCELADO", cancelled_at });
-      setMessages([{ level: "warn", text: `Documento CANCELADO (${cancelled_at}).` }]);
-      await loadDrafts();
+      const sourceJournalEntryId = (docRow as any)?.journal_entry_id || null;
+      if (!sourceJournalEntryId) {
+        throw new Error("El documento no tiene asiento contable asociado para reversar.");
+      }
+
+      setCancelSourceJournalEntryId(sourceJournalEntryId);
+
+      setCancelDocInfo({
+        doc_type: String((docRow as any)?.doc_type || ""),
+        fiscal_doc_code: String((docRow as any)?.fiscal_doc_code || ""),
+        series: String((docRow as any)?.series || ""),
+        number: String((docRow as any)?.number || ""),
+        issue_date: String((docRow as any)?.issue_date || ""),
+        counterparty_identifier: String((docRow as any)?.counterparty_identifier_snapshot || ""),
+        counterparty_name: String((docRow as any)?.counterparty_name_snapshot || ""),
+        currency_code: String((docRow as any)?.currency_code || ""),
+        grand_total: Number((docRow as any)?.grand_total || 0),
+        status: String((docRow as any)?.status || ""),
+      });
+
+      const { data: sourceLines, error: sourceLinesError } = await supabase
+        .from("journal_entry_lines")
+        .select(`
+          line_no,
+          line_description,
+          debit,
+          credit,
+          account_code_snapshot,
+          business_line_id,
+          branch_id,
+          business_lines ( id, code, name ),
+          branches ( id, code, name )
+        `)
+        .eq("company_id", companyId)
+        .eq("journal_entry_id", sourceJournalEntryId)
+        .order("line_no", { ascending: true });
+
+      if (sourceLinesError) throw sourceLinesError;
+
+      const docLabel = [
+        (docRow as any)?.fiscal_doc_code || "",
+        folioLabel((docRow as any)?.series, (docRow as any)?.number),
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      const preview: JournalLine[] = (((sourceLines as any[]) || []).map((r: any, idx: number) => {
+        const bu = Array.isArray(r.business_lines) ? r.business_lines[0] : r.business_lines;
+        const br = Array.isArray(r.branches) ? r.branches[0] : r.branches;
+
+        return {
+          line_no: idx + 1,
+          account_code: String(r.account_code_snapshot || ""),
+          description: `Cancelación ${docLabel}`.trim(),
+          debit: r.credit != null ? String(r.credit) : "",
+          credit: r.debit != null ? String(r.debit) : "",
+          cost_center_id: null,
+          business_line_id: r.business_line_id || null,
+          branch_id: r.branch_id || null,
+          cost_center_code: "",
+          business_line_code: String(bu?.code || ""),
+          branch_code: String(br?.code || ""),
+        };
+      })) as JournalLine[];
+
+      setCancelPreviewLines(preview);
     } catch (e: any) {
-      setMessages([{ level: "error", text: e?.message || "No se pudo cancelar el documento." }]);
+      setCancelModalOpen(false);
+      setMessages([
+        {
+          level: "error",
+          text: e?.message || "No se pudo preparar la cancelación del documento.",
+        },
+      ]);
+    } finally {
+      setCancelLoadingPreview(false);
     }
-    }
+  }
 
-    async function cancelViewerDocMVP() {
+  async function cancelDocMVP() {
     if (!allowCancelSales) {
       setMessages([{ level: "error", text: "La empresa tiene deshabilitada la cancelación de ventas." }]);
       return;
     }
 
-    if (!companyId || !viewerDocId || !canEdit) return;
+    if (!docId) return;
 
-    if (viewerHeader.status !== "VIGENTE") {
-      setMessages([{ level: "error", text: "Solo puedes cancelar documentos VIGENTES." }]);
+    await openCancelFlow({
+      mode: "editor",
+      tradeDocId: docId,
+      status: header.status,
+      cancelledAt: header.cancelled_at || null,
+      cancelReason: header.cancel_reason || null,
+    });
+  }
+
+  async function cancelViewerDocMVP() {
+    if (!allowCancelSales) {
+      setMessages([{ level: "error", text: "La empresa tiene deshabilitada la cancelación de ventas." }]);
       return;
     }
 
-    const ok = confirm("¿Cancelar este documento? Se guardará fecha y motivo.");
-    if (!ok) return;
+    if (!viewerDocId) return;
+
+    await openCancelFlow({
+      mode: "viewer",
+      tradeDocId: viewerDocId,
+      status: viewerHeader.status,
+      cancelledAt: viewerHeader.cancelled_at || null,
+      cancelReason: viewerHeader.cancel_reason || null,
+    });
+  }
+
+  async function confirmCancelTradeDoc() {
+    if (!companyId || !canEdit) return;
+    if (!cancelTargetDocId) return;
+    const usedCancelLines = cancelPreviewLines.filter((l) => {
+    return (
+      String(l.account_code || "").trim() ||
+      String(l.description || "").trim() ||
+      String(l.debit || "").trim() ||
+      String(l.credit || "").trim() ||
+      String(l.business_line_code || "").trim() ||
+      String(l.branch_code || "").trim()
+    );
+  });
+
+  if (usedCancelLines.length === 0) {
+    setMessages([{ level: "error", text: "El asiento de cancelación no tiene líneas." }]);
+    return;
+  }
+
+  const cancelDebit = usedCancelLines.reduce((s, l) => s + toNum(l.debit), 0);
+  const cancelCredit = usedCancelLines.reduce((s, l) => s + toNum(l.credit), 0);
+
+  if (Math.abs(cancelDebit - cancelCredit) >= 0.5) {
+    setMessages([{ level: "error", text: "El asiento de cancelación no cuadra." }]);
+    return;
+  }
 
     try {
-      const cancelled_at = viewerHeader.cancelled_at || todayISO();
+      setCancelSubmitting(true);
 
-      const { error } = await supabase
+      const userId = await getAuthUserId();
+
+      const { data: docRow, error: docError } = await supabase
+        .from("trade_docs")
+        .select("id,issue_date,currency_code,reference,doc_type,fiscal_doc_code,series,number,status")
+        .eq("company_id", companyId)
+        .eq("id", cancelTargetDocId)
+        .single();
+
+      if (docError) throw docError;
+      if ((docRow as any)?.status !== "VIGENTE") {
+        throw new Error("Solo se pueden cancelar documentos en estado VIGENTE.");
+      }
+
+      const accountingPeriodId = await getCurrentAccountingPeriodId(companyId, cancelDate);
+      if (!accountingPeriodId) {
+        throw new Error(
+          `La fecha ${cancelDate} no pertenece a un período contable ABIERTO o el período está bloqueado.`
+        );
+      }
+
+      const docLabel = [
+        (docRow as any)?.fiscal_doc_code || "",
+        folioLabel((docRow as any)?.series, (docRow as any)?.number),
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      const cancelDescription = `Cancelación ${docLabel}`.trim();
+
+      const { data: newJournalEntry, error: newJournalEntryError } = await supabase
+        .from("journal_entries")
+        .insert({
+          company_id: companyId,
+          entry_date: cancelDate,
+          description: cancelDescription,
+          reference: (docRow as any)?.reference || null,
+          currency_code: (docRow as any)?.currency_code || baseCurrency,
+          status: "DRAFT",
+          accounting_period_id: accountingPeriodId,
+          created_by: userId,
+          extra: {
+            source: "trade_doc_cancellation",
+            source_trade_doc_id: cancelTargetDocId,
+            source_journal_entry_id: cancelSourceJournalEntryId,
+            cancel_reason: cancelReason || null,
+          },
+        })
+        .select("id")
+        .single();
+
+      if (newJournalEntryError) throw newJournalEntryError;
+
+      const reverseEntryId = (newJournalEntry as any)?.id;
+      if (!reverseEntryId) throw new Error("No se pudo crear el asiento de cancelación.");
+
+      const insertLines = usedCancelLines.map((l, idx) => {
+        const acc = accByCode[String(l.account_code || "").trim()];
+        if (!acc?.id) {
+          throw new Error(`La cuenta contable ${l.account_code} no existe.`);
+        }
+
+        return {
+          company_id: companyId,
+          journal_entry_id: reverseEntryId,
+          line_no: idx + 1,
+          account_node_id: acc.id,
+          line_description: String(l.description || cancelDescription),
+          line_reference: (docRow as any)?.reference || null,
+          debit: toNum(l.debit),
+          credit: toNum(l.credit),
+          counterparty_id: null,
+          cost_center_id: null,
+          business_line_id: l.business_line_id || null,
+          branch_id: l.branch_id || null,
+          item_id: null,
+          tax_id: null,
+          tax_rate_id: null,
+          account_code_snapshot: acc.code,
+          account_name_snapshot: acc.name,
+          counterparty_identifier_snapshot: null,
+          counterparty_name_snapshot: null,
+          created_by: userId,
+        };
+      });
+
+      const { error: insertLinesError } = await supabase
+        .from("journal_entry_lines")
+        .insert(insertLines as any);
+
+      if (insertLinesError) throw insertLinesError;
+
+      const { error: postError } = await supabase.rpc("post_journal_entry", {
+        _entry_id: reverseEntryId,
+      });
+
+      if (postError) throw postError;
+
+      const { error: cancelDocError } = await supabase
         .from("trade_docs")
         .update({
           status: "CANCELADO",
-          cancelled_at,
-          cancel_reason: viewerHeader.cancel_reason || null,
+          cancelled_at: cancelDate,
+          cancel_reason: cancelReason || null,
         })
         .eq("company_id", companyId)
-        .eq("id", viewerDocId);
+        .eq("id", cancelTargetDocId)
+        .eq("status", "VIGENTE");
 
-      if (error) throw error;
+      if (cancelDocError) throw cancelDocError;
 
-      setViewerHeader((prev) => ({
-        ...prev,
-        status: "CANCELADO",
-        cancelled_at,
-      }));
+      if (cancelMode === "editor") {
+        setHeader((prev) => ({
+          ...prev,
+          status: "CANCELADO",
+          cancelled_at: cancelDate,
+          cancel_reason: cancelReason || "",
+        }));
+      } else {
+        setViewerHeader((prev) => ({
+          ...prev,
+          status: "CANCELADO",
+          cancelled_at: cancelDate,
+          cancel_reason: cancelReason || "",
+        }));
+      }
 
+      setCancelModalOpen(false);
+      await loadDrafts(true);
       await loadRegisteredDocs(true);
 
       setMessages([
-        { level: "warn", text: `Documento CANCELADO (${cancelled_at}).` },
+        {
+          level: "warn",
+          text: `Documento cancelado y reversado contablemente (${cancelDate}).`,
+        },
       ]);
     } catch (e: any) {
       setMessages([
-        { level: "error", text: e?.message || "No se pudo cancelar el documento." },
+        {
+          level: "error",
+          text: e?.message || "No se pudo cancelar el documento.",
+        },
       ]);
+    } finally {
+      setCancelSubmitting(false);
     }
   }
 
@@ -4881,6 +5142,15 @@ export default function Page() {
                   onExpandRow={(row) => {
                     void loadTimeline(row.id);
                   }}
+                  onCancelRow={(row) => {
+                    void openCancelFlow({
+                      mode: "viewer",
+                      tradeDocId: row.id,
+                      status: row.status,
+                      cancelledAt: null,
+                      cancelReason: null,
+                    });
+                  }}
                   useInternalScroll={registeredDocs.length > PAGE_SIZE}
                   hasMore={registeredHasMore}
                   loadingMore={loadingMoreRegistered}
@@ -5162,6 +5432,71 @@ export default function Page() {
             ? filteredDrafts.length
             : filteredRegisteredDocs.length
         }
+      />
+
+      <TradeDocCancelModal
+        open={cancelModalOpen}
+        onClose={() => setCancelModalOpen(false)}
+        onConfirm={confirmCancelTradeDoc}
+        loading={cancelSubmitting}
+        loadingPreview={cancelLoadingPreview}
+        cancelDate={cancelDate}
+        setCancelDate={setCancelDate}
+        cancelReason={cancelReason}
+        setCancelReason={setCancelReason}
+        previewLines={cancelPreviewLines}
+        updatePreviewLine={(idx, patch) => {
+          setCancelPreviewLines((prev) =>
+            prev.map((line, i) => (i === idx ? { ...line, ...patch } : line))
+          );
+        }}
+        addPreviewLine={() => {
+          setCancelPreviewLines((prev) => [
+            ...prev,
+            {
+              line_no: prev.length + 1,
+              account_code: "",
+              description: "",
+              debit: "",
+              credit: "",
+              cost_center_id: null,
+              business_line_id: null,
+              branch_id: null,
+              cost_center_code: "",
+              business_line_code: "",
+              branch_code: "",
+            },
+          ]);
+        }}
+        removePreviewLine={(idx) => {
+          setCancelPreviewLines((prev) =>
+            prev
+              .filter((_, i) => i !== idx)
+              .map((line, i) => ({ ...line, line_no: i + 1 }))
+          );
+        }}
+        moneyDecimals={moneyDecimals}
+        formatNumber={formatNumber}
+        headerCell={tradeDocsHeaderCell}
+        headerSub={tradeDocsHeaderSub}
+        bodyCell={tradeDocsBodyCell}
+        cellInputBase={tradeDocsCellInputBase}
+        cellInputRight={tradeDocsCellInputRight}
+        canEdit={canEdit}
+        accByCode={accByCode}
+        branches={branches}
+        businessLines={businessLines}
+        docInfo={cancelDocInfo}
+        widthClass="w-[min(1200px,96vw)]"
+        zIndexClass="z-[120]"
+        theme={{
+          header: tradeDocsTheme.header,
+          glowA: tradeDocsTheme.glowA,
+          glowB: tradeDocsTheme.glowB,
+          btnPrimary: tradeDocsTheme.btnPrimary,
+          btnSoft: tradeDocsTheme.btnSoft,
+          card: tradeDocsTheme.card,
+        }}
       />
 
       {/* Modal crear tercero (reutilizable) */}

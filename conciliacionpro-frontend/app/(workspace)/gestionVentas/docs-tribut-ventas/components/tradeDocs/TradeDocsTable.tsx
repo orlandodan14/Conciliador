@@ -6,6 +6,7 @@ import {
   Eye,
   CheckCircle2,
   Trash2,
+  Ban,
   ChevronUp,
   ChevronDown,
   ChevronsUpDown,
@@ -48,6 +49,7 @@ type TradeDocsTableProps = {
   onExpandRow?: (row: TradeDocsTableRow) => void;
   onDeleteRow?: (id: string) => void;
   onRegisterRow?: (row: TradeDocsTableRow) => Promise<void>;
+  onCancelRow?: (row: TradeDocsTableRow) => void;
 
   assertUniqueFiscalFolio: (args: {
     companyId: string;
@@ -250,6 +252,7 @@ export default function TradeDocsTable({
   onExpandRow,
   onDeleteRow,
   onRegisterRow,
+  onCancelRow,
   assertUniqueFiscalFolio,
   renderExpandedContent,
   useInternalScroll = false,
@@ -720,6 +723,30 @@ export default function TradeDocsTable({
                               <Trash2 className="h-4 w-4" />
                             </button>
                           ) : null}
+
+                          {tabKey === "registered" &&
+                          onCancelRow &&
+                          row.status === "VIGENTE" ? (
+                            <button
+                              type="button"
+                              className={cls(
+                                iconBtnDanger,
+                                !canEdit && "cursor-not-allowed opacity-60"
+                              )}
+                              disabled={!canEdit}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                onCancelRow(row);
+                              }}
+                              title="Cancelar documento"
+                              aria-label="Cancelar documento"
+                            >
+                              <Ban className="h-4 w-4" />
+                            </button>
+                          ) : null}
+
+
                         </div>
                       </TableTd>
                     </tr>
