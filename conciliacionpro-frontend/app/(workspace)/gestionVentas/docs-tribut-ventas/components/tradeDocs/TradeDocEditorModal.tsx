@@ -191,7 +191,22 @@ export function TradeDocEditorModal(props: {
   folioLabel: (series?: string | null, number?: string | null) => string;
 
       // mensajes
-      messages: Array<{ level: "error" | "warn"; text: string }>;
+      messages?: Array<{ level: "error" | "warn"; text: string }>;
+      notice?: {
+        level: "success" | "warning" | "error";
+        title: string;
+        text: string;
+        reportFileName?: string | null;
+        reportRows?: Array<{
+          scope: "IMPORT_VALIDATE" | "IMPORT_PROCESS" | "REGISTER" | "DELETE" | "SAVE";
+          status: "OK" | "ERROR";
+          doc_key?: string | null;
+          trade_doc_id?: string | null;
+          row_ref?: string | null;
+          message: string;
+        }>;
+      } | null;
+      onExportNoticeReport?: () => void;
 
       // acciones
       saveDraftMVP: () => Promise<void>;
@@ -261,7 +276,9 @@ export function TradeDocEditorModal(props: {
     calcLineAmounts,
     ellipsis,
     folioLabel,
-    messages,
+    messages = [],
+    notice = null,
+    onExportNoticeReport,
     saveDraftMVP,
     markAsVigenteMVP,
     deleteDraftMVP,
@@ -737,7 +754,38 @@ export function TradeDocEditorModal(props: {
         )
       }
     >
-            {messages.length ? (
+            {notice ? (
+              <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div
+                      className={cls(
+                        "text-sm font-semibold",
+                        notice.level === "error"
+                          ? "text-rose-900"
+                          : notice.level === "warning"
+                          ? "text-amber-900"
+                          : "text-emerald-900"
+                      )}
+                    >
+                      {notice.title}
+                    </div>
+
+                    <div className="mt-1 text-sm text-slate-700">{notice.text}</div>
+                  </div>
+
+                  {notice.reportRows?.length && onExportNoticeReport ? (
+                    <button
+                      type="button"
+                      className={theme.btnSoft}
+                      onClick={onExportNoticeReport}
+                    >
+                      Exportar reporte
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : messages.length ? (
               <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-3">
                 <div className="space-y-2">
                   {messages.slice(0, 4).map((m, i) => (

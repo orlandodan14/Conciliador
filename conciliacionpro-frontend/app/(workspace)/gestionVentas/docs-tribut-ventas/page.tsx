@@ -246,8 +246,19 @@ export default function Page() {
 
   const [journalAutoMode, setJournalAutoMode] = useState(true);
 
+  type ActionReportRow = {
+    scope: "IMPORT_VALIDATE" | "IMPORT_PROCESS" | "REGISTER" | "DELETE" | "SAVE";
+    status: "OK" | "ERROR";
+    doc_key?: string | null;
+    trade_doc_id?: string | null;
+    row_ref?: string | null;
+    message: string;
+  };
+
   const [messages, setMessages] = useState<Array<{ level: "error" | "warn"; text: string }>>([]);
   const [editorMessages, setEditorMessages] = useState<Array<{ level: "error" | "warn"; text: string }>>([]);
+  const [actionReport, setActionReport] = useState<{ fileName: string; rows: ActionReportRow[] } | null>(null);
+  const [importValidationRows, setImportValidationRows] = useState<ActionReportRow[]>([]);
 
   const [accounts, setAccounts] = useState<AccountNodeLite[]>([]);
   const [accByCode, setAccByCode] = useState<Record<string, AccountNodeLite>>({});
@@ -438,6 +449,22 @@ export default function Page() {
     );
   }
 
+  function exportActionReport(rows: ActionReportRow[], fileName = "reporte_accion.xlsx") {
+    const exportRows = rows.map((r) => ({
+      ambito: r.scope,
+      estado: r.status,
+      doc_key: r.doc_key || "",
+      trade_doc_id: r.trade_doc_id || "",
+      referencia_fila: r.row_ref || "",
+      mensaje: r.message,
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(exportRows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Reporte");
+    XLSX.writeFile(wb, fileName);
+  }
+
   const [listFilters, setListFilters] = useState<TradeDocListFilters>(
     createEmptyTradeDocListFilters()
   );
@@ -554,7 +581,15 @@ export default function Page() {
   const [importErrors, setImportErrors] = useState<string[]>([]);
   const [draftSaving, setDraftSaving] = useState(false);
   const [draftDeleting, setDraftDeleting] = useState(false);
-  const [progressMode, setProgressMode] = useState<"SAVE_DRAFT" | "REGISTER" | "DELETE_DRAFT" | null>(null);
+  type ProgressMode =
+    | "SAVE_DRAFT"
+    | "REGISTER"
+    | "DELETE_DRAFT"
+    | "IMPORT_VALIDATE"
+    | "IMPORT_UPLOAD"
+    | "IMPORT_PROCESS";
+
+  const [progressMode, setProgressMode] = useState<ProgressMode | null>(null);
 
   const [bulkRegisterProgress, setBulkRegisterProgress] = useState(0);
   const [bulkRegisterProgressVisible, setBulkRegisterProgressVisible] = useState(false);
@@ -1931,18 +1966,29 @@ export default function Page() {
 
   function setScopedMessages(
     msgs: Array<{ level: "error" | "warn"; text: string }>,
-    scope: "page" | "editor" = "page"
+    scope: "page" | "editor" = "page",
+    report?: { fileName: string; rows: ActionReportRow[] } | null
   ) {
+    const summarized = Array.isArray(msgs) ? msgs.slice(0, 1) : [];
     if (scope === "editor") {
-      setEditorMessages(msgs);
+      setEditorMessages(summarized);
     } else {
-      setMessages(msgs);
+      setMessages(summarized);
+    }
+
+    if (report !== undefined) {
+      setActionReport(report);
+    } else if (scope === "page") {
+      setActionReport(null);
     }
   }
 
   function clearScopedMessages(scope: "page" | "editor" | "all" = "all") {
     if (scope === "editor" || scope === "all") setEditorMessages([]);
-    if (scope === "page" || scope === "all") setMessages([]);
+    if (scope === "page" || scope === "all") {
+      setMessages([]);
+      setActionReport(null);
+    }
   }
 
   /**
@@ -2358,11 +2404,11 @@ export default function Page() {
 
 
   useEffect(() => {
-    if (!bulkRegistering && !draftSaving && !draftDeleting) return;
+    if (!bulkRegistering && !draftSaving && !draftDeleting && !importing) return;
 
     setBulkRegisterProgressVisible(true);
     setBulkRegisterProgressDone(false);
-    setBulkRegisterProgress(8);
+    setBulkRegisterProgress((prev) => (prev > 0 ? prev : 8));
 
     const timer = window.setInterval(() => {
       setBulkRegisterProgress((prev) => {
@@ -2375,7 +2421,7 @@ export default function Page() {
     }, 400);
 
     return () => window.clearInterval(timer);
-  }, [bulkRegistering, draftSaving, draftDeleting]);
+  }, [bulkRegistering, draftSaving, draftDeleting, importing]);
 
   useEffect(() => {
     if (!disallowPayments) return;
@@ -3379,18 +3425,38 @@ export default function Page() {
 
         if (errorCount > 0) {
           finishBulkRegisterProgress();
+
+          const reportRows: ActionReportRow[] = [];
+
+          if (okCount > 0) {
+            reportRows.push({
+              scope: "DELETE",
+              status: "OK",
+              message: `${okCount} borrador(es) eliminados correctamente.`,
+            });
+          }
+
+          errors.forEach((x: any) => {
+            reportRows.push({
+              scope: "DELETE",
+              status: "ERROR",
+              trade_doc_id: x.trade_doc_id || null,
+              message: x.message || "Error al eliminar",
+            });
+          });
+
           setScopedMessages(
             [
               {
                 level: "warn",
-                text: `Se eliminaron ${okCount} borrador(es). ${errorCount} quedaron con error.`,
+                text: `Se eliminaron ${okCount} borrador(es). ${errorCount} quedaron con error. Exporta el reporte para ver el detalle.`,
               },
-              ...errors.slice(0, 7).map((x: any) => ({
-                level: "error" as const,
-                text: `Documento ${String(x.trade_doc_id || "").slice(0, 8)}…: ${x.message || "Error al eliminar"}`,
-              })),
             ],
-            messageScope
+            messageScope,
+            {
+              fileName: "reporte_eliminacion_borradores.xlsx",
+              rows: reportRows,
+            }
           );
 
           await loadDrafts();
@@ -3409,14 +3475,37 @@ export default function Page() {
       await loadDrafts();
       finishBulkRegisterProgress();
 
-      setScopedMessages([{ level: "warn", text: successText }], messageScope);
+      setScopedMessages(
+        [{ level: "warn", text: successText }],
+        messageScope,
+        {
+          fileName: "reporte_eliminacion_borradores.xlsx",
+          rows: [
+            {
+              scope: "DELETE",
+              status: "OK",
+              message: successText,
+            },
+          ],
+        }
+      );
       return true;
     } catch (e: any) {
       resetBulkRegisterProgressNow();
 
       setScopedMessages(
         [{ level: "error", text: e?.message || "No se pudo eliminar el borrador." }],
-        messageScope
+        messageScope,
+        {
+          fileName: "reporte_eliminacion_borradores.xlsx",
+          rows: [
+            {
+              scope: "DELETE",
+              status: "ERROR",
+              message: e?.message || "No se pudo eliminar el borrador.",
+            },
+          ],
+        }
       );
 
       await loadDrafts();
@@ -3774,20 +3863,37 @@ export default function Page() {
   // =========================
   // Excel import handlers
   // =========================
+  function downloadImportTemplate() {
+    window.open(
+      "/templates/Plantilla_carga_masiva_documentos_tributarios.xlsx",
+      "_blank"
+    );
+  }
+
   function openImport() {
     setImportErrors([]);
+    setImportValidationRows([]);
     setImportPreview([]);
     setImportOpen(true);
+    setActionReport(null);
   }
-  
+
   function closeImport() {
     setImportOpen(false);
+    setImportErrors([]);
+    setImportValidationRows([]);
+    setImportPreview([]);
     (window as any).__tradeDocImportParsed = null;
   }
 
   async function onPickExcel(file: File) {
     setImportErrors([]);
+    setImportValidationRows([]);
     setImportPreview([]);
+    setProgressMode("IMPORT_VALIDATE");
+    setBulkRegisterProgressVisible(true);
+    setBulkRegisterProgressDone(false);
+    setBulkRegisterProgress(8);
 
     try {
       const ab = await file.arrayBuffer();
@@ -3804,6 +3910,7 @@ export default function Page() {
       const rawDocs = XLSX.utils.sheet_to_json(wsDocs, { defval: "" }) as any[];
       const rawLines = XLSX.utils.sheet_to_json(wsLines, { defval: "" }) as any[];
       const rawPayments = XLSX.utils.sheet_to_json(wsPayments, { defval: "" }) as any[];
+      setBulkRegisterProgress(25);
 
       const normalizeDate = (v: any) => {
         if (!v) return "";
@@ -3944,25 +4051,27 @@ export default function Page() {
           };
         })
         .filter(Boolean) as any[];
+      
+      setBulkRegisterProgress(60);
 
-      const errs: string[] = [];
+      const validationRows: ActionReportRow[] = [];
 
       docs.forEach((d, i) => {
-        if (!d.fiscal_doc_code) errs.push(`DOCUMENTOS fila ${i + 2}: fiscal_doc_code vacío.`);
-        if (!d.number) errs.push(`DOCUMENTOS fila ${i + 2}: number vacío.`);
-        if (!d.issue_date) errs.push(`DOCUMENTOS fila ${i + 2}: issue_date vacío.`);
-        if (!d.due_date) errs.push(`DOCUMENTOS fila ${i + 2}: due_date vacío.`);
-        if (!d.currency_code) errs.push(`DOCUMENTOS fila ${i + 2}: currency_code vacío.`);
-        if (!d.branch_code) errs.push(`DOCUMENTOS fila ${i + 2}: branch_code vacío.`);
-        if (!d.counterparty_identifier) errs.push(`DOCUMENTOS fila ${i + 2}: counterparty_identifier vacío.`);
-        if (!d.counterparty_name) errs.push(`DOCUMENTOS fila ${i + 2}: counterparty_name vacío.`);
+        if (!d.fiscal_doc_code) validationRows.push({ scope: "IMPORT_VALIDATE", status: "ERROR", row_ref: `DOCUMENTOS fila ${i + 2}`, doc_key: d.doc_key || null, message: "fiscal_doc_code vacío." });
+        if (!d.number) validationRows.push({ scope: "IMPORT_VALIDATE", status: "ERROR", row_ref: `DOCUMENTOS fila ${i + 2}`, doc_key: d.doc_key || null, message: "number vacío." });
+        if (!d.issue_date) validationRows.push({ scope: "IMPORT_VALIDATE", status: "ERROR", row_ref: `DOCUMENTOS fila ${i + 2}`, doc_key: d.doc_key || null, message: "issue_date vacío." });
+        if (!d.due_date) validationRows.push({ scope: "IMPORT_VALIDATE", status: "ERROR", row_ref: `DOCUMENTOS fila ${i + 2}`, doc_key: d.doc_key || null, message: "due_date vacío." });
+        if (!d.currency_code) validationRows.push({ scope: "IMPORT_VALIDATE", status: "ERROR", row_ref: `DOCUMENTOS fila ${i + 2}`, doc_key: d.doc_key || null, message: "currency_code vacío." });
+        if (!d.branch_code) validationRows.push({ scope: "IMPORT_VALIDATE", status: "ERROR", row_ref: `DOCUMENTOS fila ${i + 2}`, doc_key: d.doc_key || null, message: "branch_code vacío." });
+        if (!d.counterparty_identifier) validationRows.push({ scope: "IMPORT_VALIDATE", status: "ERROR", row_ref: `DOCUMENTOS fila ${i + 2}`, doc_key: d.doc_key || null, message: "counterparty_identifier vacío." });
+        if (!d.counterparty_name) validationRows.push({ scope: "IMPORT_VALIDATE", status: "ERROR", row_ref: `DOCUMENTOS fila ${i + 2}`, doc_key: d.doc_key || null, message: "counterparty_name vacío." });
       });
 
       lines.forEach((l, i) => {
-        if (!l.doc_key) errs.push(`LINEAS fila ${i + 2}: doc_key inválido.`);
-        if (!l.description) errs.push(`LINEAS fila ${i + 2}: description vacía.`);
-        if (Number(l.qty || 0) <= 0) errs.push(`LINEAS fila ${i + 2}: qty debe ser mayor a 0.`);
-        if (Number(l.unit_price || 0) < 0) errs.push(`LINEAS fila ${i + 2}: unit_price no puede ser negativo.`);
+        if (!l.doc_key) validationRows.push({ scope: "IMPORT_VALIDATE", status: "ERROR", row_ref: `LINEAS fila ${i + 2}`, doc_key: l.doc_key || null, message: "doc_key inválido." });
+        if (!l.description) validationRows.push({ scope: "IMPORT_VALIDATE", status: "ERROR", row_ref: `LINEAS fila ${i + 2}`, doc_key: l.doc_key || null, message: "description vacía." });
+        if (Number(l.qty || 0) <= 0) validationRows.push({ scope: "IMPORT_VALIDATE", status: "ERROR", row_ref: `LINEAS fila ${i + 2}`, doc_key: l.doc_key || null, message: "qty debe ser mayor a 0." });
+        if (Number(l.unit_price || 0) < 0) validationRows.push({ scope: "IMPORT_VALIDATE", status: "ERROR", row_ref: `LINEAS fila ${i + 2}`, doc_key: l.doc_key || null, message: "unit_price no puede ser negativo." });
 
         const ex = Number(l.ex_override || 0);
         const af = Number(l.af_override || 0);
@@ -3970,11 +4079,34 @@ export default function Page() {
         const total = Number(l.total_override || 0);
 
         if (Math.abs((ex + af + iva) - total) > 1) {
-          errs.push(`LINEAS fila ${i + 2}: los montos no cuadran.`);
+          validationRows.push({ scope: "IMPORT_VALIDATE", status: "ERROR", row_ref: `LINEAS fila ${i + 2}`, doc_key: l.doc_key || null, message: "los montos no cuadran." });
         }
       });
 
-      setImportErrors(errs);
+      setImportValidationRows(validationRows);
+      setImportErrors(
+        validationRows.length > 0
+          ? [`Se detectaron ${validationRows.length} error(es). Exporta el reporte para ver el detalle.`]
+          : []
+      );
+      setActionReport(
+        validationRows.length > 0
+          ? {
+              fileName: "reporte_validacion_importacion.xlsx",
+              rows: validationRows,
+            }
+          : {
+              fileName: "reporte_validacion_importacion.xlsx",
+              rows: [
+                {
+                  scope: "IMPORT_VALIDATE",
+                  status: "OK",
+                  message: `Validación correcta. Documentos: ${docs.length}.`,
+                },
+              ],
+            }
+      );
+      setBulkRegisterProgress(85);
 
       setImportPreview(
         docs.slice(0, 200).map((d) => ({
@@ -3990,8 +4122,27 @@ export default function Page() {
         lines,
         payments,
       };
+    finishBulkRegisterProgress();
     } catch (e: any) {
+      resetBulkRegisterProgressNow();
+      setImportValidationRows([
+        {
+          scope: "IMPORT_VALIDATE",
+          status: "ERROR",
+          message: e?.message || "No se pudo leer el archivo.",
+        },
+      ]);
       setImportErrors([e?.message || "No se pudo leer el archivo."]);
+      setActionReport({
+        fileName: "reporte_validacion_importacion.xlsx",
+        rows: [
+          {
+            scope: "IMPORT_VALIDATE",
+            status: "ERROR",
+            message: e?.message || "No se pudo leer el archivo.",
+          },
+        ],
+      });
       setImportPreview([]);
       (window as any).__tradeDocImportParsed = null;
     }
@@ -4003,15 +4154,24 @@ export default function Page() {
     const parsed = (window as any).__tradeDocImportParsed;
     if (!parsed) {
       setMessages([{ level: "error", text: "Primero debes cargar un archivo válido." }]);
+      setActionReport(null);
       return;
     }
 
-    if (importErrors.length > 0) {
+    if (importValidationRows.length > 0) {
       setMessages([{ level: "error", text: "Corrige los errores del archivo antes de importar." }]);
+      setActionReport({
+        fileName: "reporte_validacion_importacion.xlsx",
+        rows: importValidationRows,
+      });
       return;
     }
 
     setImporting(true);
+    setProgressMode("IMPORT_UPLOAD");
+    setBulkRegisterProgressVisible(true);
+    setBulkRegisterProgressDone(false);
+    setBulkRegisterProgress(10);
 
     try {
       const { data: jobId, error: jobError } = await supabase.rpc("create_trade_doc_import_job", {
@@ -4022,8 +4182,11 @@ export default function Page() {
 
       if (jobError) throw jobError;
       if (!jobId) throw new Error("No se pudo crear el job de importación.");
+      setBulkRegisterProgress(18);
 
       const chunkSize = 300;
+      const totalDocs = parsed.docs.length;
+      let uploadedDocs = 0;
 
       for (let i = 0; i < parsed.docs.length; i += chunkSize) {
         const docsChunk = parsed.docs.slice(i, i + chunkSize);
@@ -4066,7 +4229,14 @@ export default function Page() {
         });
 
         if (appendError) throw appendError;
+
+        uploadedDocs += docsChunk.length;
+        const uploadProgress = Math.round((uploadedDocs / totalDocs) * 52);
+        setBulkRegisterProgress(Math.min(70, 18 + uploadProgress));
       }
+
+      setProgressMode("IMPORT_PROCESS");
+      setBulkRegisterProgress(78);
 
       const { data: processResult, error: processError } = await supabase.rpc("process_trade_doc_import_job", {
         _job_id: jobId,
@@ -4074,6 +4244,7 @@ export default function Page() {
       });
 
       if (processError) throw processError;
+      setBulkRegisterProgress(92);
 
       const { data: detailResult, error: detailError } = await supabase.rpc("get_trade_doc_import_job_result", {
         _job_id: jobId,
@@ -4088,34 +4259,59 @@ export default function Page() {
       const okDocs = Number(job.ok_docs || 0);
       const errorDocs = Number(job.error_docs || 0);
 
-      const resultMessages: Array<{ level: "error" | "warn"; text: string }> = [];
+      const reportRows: ActionReportRow[] = results.map((r: any) => ({
+        scope: "IMPORT_PROCESS",
+        status: r.status === "ERROR" ? "ERROR" : "OK",
+        doc_key: r.doc_key || null,
+        trade_doc_id: r.trade_doc_id || null,
+        message:
+          r.message || (r.status === "ERROR" ? "Error de importación" : "Importado correctamente"),
+      }));
 
-      resultMessages.push({
-        level: "warn",
-        text: `Carga masiva finalizada. OK: ${okDocs}. Con error: ${errorDocs}.`,
+      setMessages([
+        {
+          level: errorDocs > 0 ? "warn" : "warn",
+          text:
+            errorDocs > 0
+              ? `Carga masiva finalizada. OK: ${okDocs}. Con error: ${errorDocs}. Exporta el reporte para ver el detalle.`
+              : `Carga masiva finalizada. OK: ${okDocs}.`,
+        },
+      ]);
+      setActionReport({
+        fileName: "reporte_importacion_documentos.xlsx",
+        rows:
+          reportRows.length > 0
+            ? reportRows
+            : [
+                {
+                  scope: "IMPORT_PROCESS",
+                  status: errorDocs > 0 ? "ERROR" : "OK",
+                  message: `Carga masiva finalizada. OK: ${okDocs}. Con error: ${errorDocs}.`,
+                },
+              ],
       });
-
-      results
-        .filter((r: any) => r.status === "ERROR")
-        .slice(0, 10)
-        .forEach((r: any) => {
-          resultMessages.push({
-            level: "error",
-            text: `${r.doc_key || "Documento"}: ${r.message || "Error de importación"}`,
-          });
-        });
-
-      setMessages(resultMessages);
 
       closeImport();
       await loadDrafts(true);
       await loadRegisteredDocs(true);
 
       (window as any).__tradeDocImportParsed = null;
+      finishBulkRegisterProgress();
     } catch (e: any) {
+      resetBulkRegisterProgressNow();
       setMessages([
         { level: "error", text: e?.message || "No se pudo completar la importación masiva." },
       ]);
+      setActionReport({
+        fileName: "reporte_importacion_documentos.xlsx",
+        rows: [
+          {
+            scope: "IMPORT_PROCESS",
+            status: "ERROR",
+            message: e?.message || "No se pudo completar la importación masiva.",
+          },
+        ],
+      });
     } finally {
       setImporting(false);
     }
@@ -4151,25 +4347,38 @@ export default function Page() {
       await loadRegisteredDocs();
       finishBulkRegisterProgress();
 
-      if (errorCount === 0) {
-        setMessages([
-          {
-            level: "warn",
-            text: `Se registraron ${okCount} documento(s) correctamente.`,
-          },
-        ]);
-      } else {
-        setMessages([
-          {
-            level: "warn",
-            text: `Se registraron ${okCount} documento(s). ${errorCount} quedaron con error.`,
-          },
-          ...errors.slice(0, 7).map((x: any) => ({
-            level: "error" as const,
-            text: `Documento ${String(x.trade_doc_id || "").slice(0, 8)}…: ${x.message || "Error al registrar"}`,
-          })),
-        ]);
+      const reportRows: ActionReportRow[] = [];
+
+      if (okCount > 0) {
+        reportRows.push({
+          scope: "REGISTER",
+          status: "OK",
+          message: `${okCount} documento(s) registrados correctamente.`,
+        });
       }
+
+      errors.forEach((x: any) => {
+        reportRows.push({
+          scope: "REGISTER",
+          status: "ERROR",
+          trade_doc_id: x.trade_doc_id || null,
+          message: x.message || "Error al registrar",
+        });
+      });
+
+      setMessages([
+        {
+          level: errorCount > 0 ? "warn" : "warn",
+          text:
+            errorCount > 0
+              ? `Se registraron ${okCount} documento(s). ${errorCount} quedaron con error. Exporta el reporte para ver el detalle.`
+              : `Se registraron ${okCount} documento(s) correctamente.`,
+        },
+      ]);
+      setActionReport({
+        fileName: "reporte_registro_masivo.xlsx",
+        rows: reportRows,
+      });
     } catch (e: any) {
       setMessages([
         {
@@ -4177,6 +4386,16 @@ export default function Page() {
           text: e?.message || "No se pudo completar el registro masivo.",
         },
       ]);
+      setActionReport({
+        fileName: "reporte_registro_masivo.xlsx",
+        rows: [
+          {
+            scope: "REGISTER",
+            status: "ERROR",
+            message: e?.message || "No se pudo completar el registro masivo.",
+          },
+        ],
+      });
       finishBulkRegisterProgress();
       await loadDrafts();
       await loadRegisteredDocs();
@@ -4207,6 +4426,84 @@ export default function Page() {
   // ✅ regla visual: botón cancelar solo si es VIGENTE (contabilizado) + permitido por settings
   const showCancelButton = allowCancelSales && canEdit && Boolean(docId) && header.status === "VIGENTE";
 
+  function getProgressTitle(mode: ProgressMode | null, done: boolean) {
+    if (done) {
+      switch (mode) {
+        case "SAVE_DRAFT":
+          return "Guardado completado";
+        case "DELETE_DRAFT":
+          return "Eliminación completada";
+        case "REGISTER":
+          return "Registro completado";
+        case "IMPORT_VALIDATE":
+        case "IMPORT_UPLOAD":
+        case "IMPORT_PROCESS":
+          return "Importación completada";
+        default:
+          return "Proceso completado";
+      }
+    }
+
+    switch (mode) {
+      case "SAVE_DRAFT":
+        return "Guardando borrador";
+      case "DELETE_DRAFT":
+        return "Eliminando borradores";
+      case "REGISTER":
+        return "Registrando borradores";
+      case "IMPORT_VALIDATE":
+        return "Validando archivo";
+      case "IMPORT_UPLOAD":
+        return "Subiendo archivo";
+      case "IMPORT_PROCESS":
+        return "Procesando importación";
+      default:
+        return "Procesando";
+    }
+  }
+
+  function getProgressDescription(mode: ProgressMode | null, done: boolean) {
+    if (done) return "El proceso terminó correctamente.";
+
+    switch (mode) {
+      case "SAVE_DRAFT":
+        return "El sistema está guardando el borrador.";
+      case "DELETE_DRAFT":
+        return "El sistema está eliminando los borradores seleccionados.";
+      case "REGISTER":
+        return "El sistema está contabilizando los documentos seleccionados.";
+      case "IMPORT_VALIDATE":
+        return "El sistema está validando la estructura del archivo.";
+      case "IMPORT_UPLOAD":
+        return "El sistema está cargando la información al servidor.";
+      case "IMPORT_PROCESS":
+        return "El sistema está procesando la importación.";
+      default:
+        return "El sistema está trabajando.";
+    }
+  }
+
+  function getProgressFooter(mode: ProgressMode | null, done: boolean) {
+    if (done) return "Finalizado";
+
+    switch (mode) {
+      case "SAVE_DRAFT":
+        return "Guardando en servidor";
+      case "DELETE_DRAFT":
+        return "Eliminando en servidor";
+      case "REGISTER":
+        return "Procesando en servidor";
+      case "IMPORT_VALIDATE":
+        return "Validando";
+      case "IMPORT_UPLOAD":
+        return "Subiendo lotes";
+      case "IMPORT_PROCESS":
+        return "Procesando job";
+      default:
+        return "Procesando";
+    }
+  }
+
   return (
     <div className="p-6">
       {bulkRegisterProgressVisible ? (
@@ -4216,27 +4513,11 @@ export default function Page() {
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="text-sm font-bold text-slate-900">
-                    {bulkRegisterProgressDone
-                      ? progressMode === "SAVE_DRAFT"
-                        ? "Guardado completado"
-                        : progressMode === "DELETE_DRAFT"
-                          ? "Eliminación completada"
-                          : "Registro completado"
-                      : progressMode === "SAVE_DRAFT"
-                        ? "Guardando borrador"
-                        : progressMode === "DELETE_DRAFT"
-                          ? "Eliminando borradores"
-                          : "Registrando borradores"}
+                    {getProgressTitle(progressMode, bulkRegisterProgressDone)}
                   </div>
 
                   <div className="text-xs text-slate-500">
-                    {bulkRegisterProgressDone
-                      ? "El proceso terminó correctamente."
-                      : progressMode === "SAVE_DRAFT"
-                        ? "El sistema está guardando el borrador."
-                        : progressMode === "DELETE_DRAFT"
-                          ? "El sistema está eliminando los borradores seleccionados."
-                          : "El sistema está contabilizando los documentos seleccionados."}
+                    {getProgressDescription(progressMode, bulkRegisterProgressDone)}
                   </div>
                 </div>
 
@@ -4256,15 +4537,7 @@ export default function Page() {
               </div>
 
               <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
-                <span>
-                  {bulkRegisterProgressDone
-                    ? "Finalizado"
-                    : progressMode === "SAVE_DRAFT"
-                      ? "Guardando en servidor"
-                      : progressMode === "DELETE_DRAFT"
-                        ? "Eliminando en servidor"
-                        : "Procesando en servidor"}
-                </span>
+                <span>{getProgressFooter(progressMode, bulkRegisterProgressDone)}</span>
                 <span>
                   {bulkRegistering || draftSaving || draftDeleting
                     ? "En curso..."
@@ -4328,6 +4601,15 @@ export default function Page() {
 
               <button
                 type="button"
+                className={tradeDocsTheme.btnGlass}
+                onClick={downloadImportTemplate}
+                title="Descargar plantilla de carga masiva"
+              >
+                ⬇️ Descargar formato
+              </button>
+
+              <button
+                type="button"
                 className={cls(tradeDocsTheme.btnGlass, !canEdit && "opacity-60 cursor-not-allowed")}
                 disabled={!canEdit}
                 onClick={openNewDoc}
@@ -4342,15 +4624,27 @@ export default function Page() {
         {messages.length ? (
           <div className="border-t bg-white px-7 py-4">
             <div className="space-y-2">
-              {messages.slice(0, 8).map((m, i) => (
+              {messages.slice(0, 1).map((m, i) => (
                 <div
                   key={i}
                   className={cls(
-                    "rounded-xl border px-3 py-2 text-sm",
+                    "rounded-xl border px-3 py-3 text-sm",
                     m.level === "error" ? "border-rose-200 bg-rose-50 text-rose-900" : "border-amber-200 bg-amber-50 text-amber-900"
                   )}
                 >
-                  {m.text}
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>{m.text}</div>
+
+                    {actionReport?.rows?.length ? (
+                      <button
+                        type="button"
+                        className={tradeDocsTheme.btnSoft}
+                        onClick={() => exportActionReport(actionReport.rows, actionReport.fileName)}
+                      >
+                        Exportar reporte
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               ))}
             </div>
@@ -4410,29 +4704,6 @@ export default function Page() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    className={tradeDocsTheme.btnSoft}
-                    onClick={() => {
-                      if (activeTab === "drafts") {
-                        setDraftsOffset(0);
-                        setDraftsHasMore(true);
-                        void loadDrafts(true);
-                      } else {
-                        setRegisteredOffset(0);
-                        setRegisteredHasMore(true);
-                        void loadRegisteredDocs(true);
-                      }
-                    }}
-                  >
-                    {activeTab === "drafts"
-                      ? loadingDrafts
-                        ? "Cargando..."
-                        : "Refrescar"
-                      : loadingRegisteredDocs
-                      ? "Cargando..."
-                      : "Refrescar"}
-                  </button>
 
                   <button
                     type="button"
@@ -4550,6 +4821,15 @@ export default function Page() {
                         const firstError =
                           result.errors?.[0]?.message || "No se pudo registrar.";
                         setMessages([{ level: "error", text: firstError }]);
+                        setActionReport({
+                          fileName: "reporte_registro_masivo.xlsx",
+                          rows: result.errors.map((x: any) => ({
+                            scope: "REGISTER",
+                            status: "ERROR",
+                            trade_doc_id: x.trade_doc_id || null,
+                            message: x.message || "Error al registrar",
+                          })),
+                        });
                         return;
                       }
 
@@ -4559,6 +4839,17 @@ export default function Page() {
                           text: "Documento registrado (VIGENTE) y contabilizado correctamente.",
                         },
                       ]);
+                      setActionReport({
+                        fileName: "reporte_registro_masivo.xlsx",
+                        rows: [
+                          {
+                            scope: "REGISTER",
+                            status: "OK",
+                            trade_doc_id: row.id,
+                            message: "Documento registrado correctamente.",
+                          },
+                        ],
+                      });
                     } catch (e: any) {
                       resetBulkRegisterProgressNow();
                       setMessages([{ level: "error", text: e?.message || "No se pudo registrar." }]);

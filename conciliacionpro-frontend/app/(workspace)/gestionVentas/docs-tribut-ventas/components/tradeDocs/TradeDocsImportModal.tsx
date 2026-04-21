@@ -5,26 +5,39 @@ import BaseModal from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/compon
 import { cls, folioLabel } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/helpers";
 import { tradeDocsTheme } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/ui";
 
+type ActionReportRow = {
+  scope: "IMPORT_VALIDATE" | "IMPORT_PROCESS" | "REGISTER" | "DELETE" | "SAVE";
+  status: "OK" | "ERROR";
+  doc_key?: string | null;
+  trade_doc_id?: string | null;
+  row_ref?: string | null;
+  message: string;
+};
+
 type Props = {
   open: boolean;
   canEdit: boolean;
   importing: boolean;
-  importErrors: string[];
+  importErrors?: string[];
+  importValidationRows?: ActionReportRow[];
   importPreview: any[];
   onClose: () => void;
   onConfirm: () => void;
   onPickExcel: (file: File) => void;
+  onExportValidationReport?: () => void;
 };
 
 export default function TradeDocsImportModal({
   open,
   canEdit,
   importing,
-  importErrors,
+  importErrors = [],
+  importValidationRows = [],
   importPreview,
   onClose,
   onConfirm,
   onPickExcel,
+  onExportValidationReport,
 }: Props) {
   const [selectedFileName, setSelectedFileName] = useState("");
 
@@ -34,6 +47,19 @@ export default function TradeDocsImportModal({
     const payments = importPreview.reduce((acc, r) => acc + Number(r.payments_count || 0), 0);
     return { docs, lines, payments };
   }, [importPreview]);
+  const effectiveValidationRows = useMemo<ActionReportRow[]>(() => {
+    if (importValidationRows.length) return importValidationRows;
+    return importErrors.map((message) => ({
+      scope: "IMPORT_VALIDATE",
+      status: "ERROR",
+      message,
+    }));
+  }, [importValidationRows, importErrors]);
+
+  const validationErrorCount = useMemo(() => {
+    return effectiveValidationRows.filter((x) => x.status === "ERROR").length;
+  }, [effectiveValidationRows]);
+
 
   return (
     <BaseModal
@@ -51,10 +77,10 @@ export default function TradeDocsImportModal({
           <button
             className={cls(
               tradeDocsTheme.btnPrimary,
-              (!canEdit || importing || !importPreview.length || importErrors.length > 0) &&
+              (!canEdit || importing || !importPreview.length || validationErrorCount > 0) &&
                 "cursor-not-allowed opacity-60"
             )}
-            disabled={!canEdit || importing || !importPreview.length || importErrors.length > 0}
+            disabled={!canEdit || importing || !importPreview.length || validationErrorCount > 0}
             onClick={onConfirm}
           >
             {importing ? "Importando..." : "Crear borradores"}
@@ -154,14 +180,30 @@ export default function TradeDocsImportModal({
           </div>
         </div>
 
-        {importErrors.length ? (
-          <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
-            <b>Errores detectados:</b>
-            <ul className="mt-2 list-disc pl-5">
-              {importErrors.slice(0, 12).map((x, i) => (
-                <li key={i}>{x}</li>
-              ))}
-            </ul>
+        {effectiveValidationRows.length ? (
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">Resultado de validación</div>
+                <div className="text-xs text-slate-500">
+                  {validationErrorCount > 0
+                    ? `Se detectaron ${validationErrorCount} error(es).`
+                    : "Validación correcta."}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {onExportValidationReport && effectiveValidationRows.length ? (
+                  <button
+                    type="button"
+                    className={tradeDocsTheme.btnSoft}
+                    onClick={onExportValidationReport}
+                  >
+                    Exportar reporte
+                  </button>
+                ) : null}
+              </div>
+            </div>
           </div>
         ) : null}
 
