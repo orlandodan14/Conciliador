@@ -116,9 +116,9 @@ function TableTh({
   return (
     <th
       className={cls(
-        "px-3 py-3 font-extrabold whitespace-nowrap",
-        "text-[11px] uppercase tracking-[0.08em]",
-        "text-center text-[#0b2b4f]",
+        "px-1.5 py-3 font-extrabold",
+        "text-[10px] uppercase tracking-[0.06em]",
+        "text-center text-[#0b2b4f] overflow-hidden",
         align
       )}
     >

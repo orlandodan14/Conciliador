@@ -293,7 +293,7 @@ export function getTradeDocSuggestion(args: {
   }
 
   return {
-    text: "OK",
+    text: "Saldado",
     className: "bg-emerald-100 text-emerald-800",
   };
 }

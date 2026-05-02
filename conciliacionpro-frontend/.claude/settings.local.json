@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -Command \"Get-Content 'C:\\\\Users\\\\orlando.paredes\\\\.claude\\\\projects\\\\C--Users-orlando-paredes-Documents-Conciliador-conciliacionpro-frontend--claude-worktrees-admiring-nash-8be9eb\\\\15a0d2d8-c2ef-4add-9da2-c93b328bd4a7\\\\subagents\\\\agent-a116db2a5faea43d2.jsonl' | Select-Object -Last 20\")",
+      "Bash(npx tsc *)"
+    ]
+  }
+}

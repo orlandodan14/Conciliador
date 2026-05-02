@@ -24,7 +24,7 @@ export default function LoginPage() {
   // Estado: password escrito por el usuario
   const [password, setPassword] = useState("");
 
-  // Estado: “cargando” (bloquea el botón y evita dobles clicks)
+  // Estado: "cargando" (bloquea el botón y evita dobles clicks)
   const [loading, setLoading] = useState(false);
 
   // Estado: mensaje de error para mostrar en UI
@@ -53,7 +53,7 @@ export default function LoginPage() {
   }, [sp]);
 
   // --------------------------------------------------------------------------
-  // canSubmit = “se puede enviar el login?”
+  // canSubmit = "se puede enviar el login?"
   // - Debe haber email no vacío
   // - Debe haber password
   // - No debe estar cargando
@@ -69,68 +69,23 @@ export default function LoginPage() {
   // - Si falla algo, por seguridad lo manda a /onboarding (no saltarse setup)
   // --------------------------------------------------------------------------
   const decidePostLoginRoute = async (): Promise<string> => {
-    // Obtiene el usuario actual desde Supabase Auth
     const { data: uRes } = await supabase.auth.getUser();
     const user = uRes.user;
 
-    // Si por alguna razón no hay usuario, vuelve a login
     if (!user) return "/login";
 
-    // 1) Trae empresas donde el usuario ya es miembro (company_members)
     const { data: myMemberships, error: memErr } = await supabase
-      .from("company_members") // tabla de membresías
-      .select("company_id") // solo necesitamos el id de empresa
-      .eq("user_id", user.id); // filtramos por el usuario logueado
+      .from("company_members")
+      .select("company_id")
+      .eq("user_id", user.id)
+      .limit(1);
 
-    // Si falla lectura, lo mandamos al onboarding (más seguro)
     if (memErr) {
       console.log("company_members read error:", memErr);
       return "/onboarding";
     }
 
-    // companyIds = IDs únicos de empresas donde pertenece
-    const companyIds = Array.from(new Set((myMemberships ?? []).map((m) => m.company_id)));
-
-    // Si no pertenece a ninguna empresa todavía => onboarding
-    if (companyIds.length === 0) return "/onboarding";
-
-    // 2) ¿Existe al menos 1 miembro adicional en alguna de esas empresas?
-    // - Busca cualquier miembro que NO sea el propio usuario
-    const otherMemberReq = supabase
-      .from("company_members")
-      .select("user_id")
-      .in("company_id", companyIds)
-      .neq("user_id", user.id)
-      .limit(1);
-
-    // 3) ¿Existe al menos 1 invitación pendiente para esas empresas?
-    // - El filtro de status es “no CANCELLED” (ajústalo si tu status es distinto)
-    const inviteReq = supabase
-      .from("team_invites")
-      .select("id")
-      .in("company_id", companyIds)
-      .neq("status", "CANCELLED")
-      .limit(1);
-
-    // Ejecuta ambas consultas en paralelo para ahorrar tiempo
-    const [{ data: otherMember, error: otherErr }, { data: invites, error: invErr }] =
-      await Promise.all([otherMemberReq, inviteReq]);
-
-    // Log si hay errores (para debug)
-    if (otherErr) console.log("other members check error:", otherErr);
-    if (invErr) console.log("team_invites check error:", invErr);
-
-    // Si hay algún error en estas validaciones, no saltarse el setup
-    if (otherErr || invErr) return "/onboarding";
-
-    // True si encontró otro miembro
-    const hasOtherMember = (otherMember?.length ?? 0) > 0;
-
-    // True si encontró invitaciones
-    const hasInvites = (invites?.length ?? 0) > 0;
-
-    // Si ya hay miembros o invitaciones => onboarding listo => seleccionar empresa
-    return hasOtherMember || hasInvites ? "/onboarding/select-company" : "/onboarding";
+    return (myMemberships?.length ?? 0) > 0 ? "/onboarding/select-company" : "/onboarding";
   };
 
   // --------------------------------------------------------------------------
@@ -138,7 +93,7 @@ export default function LoginPage() {
   // - Valida canSubmit
   // - Normaliza email
   // - signInWithPassword
-  // - Maneja caso “email no confirmado”
+  // - Maneja caso "email no confirmado"
   // - Si session existe => decide ruta post login
   // --------------------------------------------------------------------------
   const onLogin = async () => {

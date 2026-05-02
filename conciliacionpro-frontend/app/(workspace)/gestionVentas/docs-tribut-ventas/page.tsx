@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabaseClient";
 import * as XLSX from "xlsx";
 import { CounterpartyCreateModal, Counterparty as CPCounterparty } from "@/app/(workspace)/components/counterparties/CounterpartyCreateModal";
 import { TradeDocEditorModal } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocEditorModal";
-import { OriginDocSearchModal } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/OriginDocSearchModal";
+import { OriginDocSearchModal } from "@/app/(workspace)/gestionVentas/components/OriginDocSearchModal";
 import TradeDocsTable from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocsTable";
 import type {
   AccountDefaultRow,
@@ -399,6 +399,8 @@ export default function Page() {
               ? "Nota crédito"
               : item.doc_type === "DEBIT_NOTE"
               ? "Nota débito"
+              : item.doc_type === "DEVOLUCION"
+              ? "Devolución"
               : "Documento";
 
           const docLabel =
@@ -1129,6 +1131,12 @@ export default function Page() {
     drafts.forEach((d) => (byType[d.doc_type] = (byType[d.doc_type] || 0) + 1));
     return { count, sumTotal, byType };
   }, [drafts]);
+
+  const registeredSummary = useMemo(() => {
+    const count = registeredDocs.length;
+    const sumTotal = registeredDocs.reduce((s, d) => s + Number(d.grand_total || 0), 0);
+    return { count, sumTotal };
+  }, [registeredDocs]);
 
 
   /**
@@ -2269,6 +2277,7 @@ export default function Page() {
           ].join(",")
         )
         .eq("company_id", companyId)
+        .in("doc_type", ["INVOICE", "CREDIT_NOTE", "DEBIT_NOTE"])
         .eq("status", "BORRADOR")
         .order("issue_date", { ascending: false })
         .order("created_at", { ascending: false })
@@ -2335,6 +2344,7 @@ export default function Page() {
           ].join(",")
         )
         .eq("company_id", companyId)
+        .in("doc_type", ["INVOICE", "CREDIT_NOTE", "DEBIT_NOTE"])
         .in("status", ["VIGENTE", "CANCELADO"])
         .order("issue_date", { ascending: false })
         .order("created_at", { ascending: false })
@@ -2531,6 +2541,8 @@ export default function Page() {
 
       const headerPayloadFull: any = {
         company_id: companyId,
+        doc_class: "FISCAL",
+        module: "SALES",
         doc_type: header.doc_type,
         status: "BORRADOR",
         issue_date: header.issue_date,
@@ -2558,6 +2570,8 @@ export default function Page() {
 
       const headerPayloadFallback: any = {
         company_id: companyId,
+        doc_class: "FISCAL",
+        module: "SALES",
         doc_type: header.doc_type,
         status: "BORRADOR",
         issue_date: header.issue_date,
@@ -4822,12 +4836,25 @@ export default function Page() {
               <h1 className="mt-1 text-3xl font-black leading-tight">Documentos tributarios</h1>
 
               <div className="mt-4 flex flex-wrap gap-2 text-xs text-white/90">
-                <span className="inline-flex items-center rounded-full bg-white/10 px-2 py-0.5 ring-1 ring-white/15">
-                  Borradores: <b className="ml-1">{draftsSummary.count}</b>
-                </span>
-                <span className="inline-flex items-center rounded-full bg-white/10 px-2 py-0.5 ring-1 ring-white/15">
-                  Total borradores: <b className="ml-1">{formatNumber(draftsSummary.sumTotal, moneyDecimals)}</b>
-                </span>
+                {activeTab === "drafts" ? (
+                  <>
+                    <span className="inline-flex items-center rounded-full bg-white/10 px-2 py-0.5 ring-1 ring-white/15">
+                      Borradores: <b className="ml-1">{draftsSummary.count}</b>
+                    </span>
+                    <span className="inline-flex items-center rounded-full bg-white/10 px-2 py-0.5 ring-1 ring-white/15">
+                      Total borradores: <b className="ml-1">{formatNumber(draftsSummary.sumTotal, moneyDecimals)}</b>
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="inline-flex items-center rounded-full bg-white/10 px-2 py-0.5 ring-1 ring-white/15">
+                      Registrados: <b className="ml-1">{registeredSummary.count}</b>
+                    </span>
+                    <span className="inline-flex items-center rounded-full bg-white/10 px-2 py-0.5 ring-1 ring-white/15">
+                      Total registrados: <b className="ml-1">{formatNumber(registeredSummary.sumTotal, moneyDecimals)}</b>
+                    </span>
+                  </>
+                )}
               </div>
             </div>
 
@@ -5365,6 +5392,7 @@ export default function Page() {
         open={originSearchOpen}
         onClose={() => setOriginSearchOpen(false)}
         canEdit={canEdit}
+        title="Buscar documento para Nota de Crédito / Débito"
         theme={{
           header: tradeDocsTheme.header,
           glowA: tradeDocsTheme.glowA,
