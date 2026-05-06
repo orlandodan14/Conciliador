@@ -70,6 +70,7 @@ import {
 } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/data";
 import BaseModal from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/BaseModal";
 import TradeDocsFiltersModal from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocsFiltersModal";
+import TradeDocsReportTab from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocsReportTab";
 import TradeDocsImportModal from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocsImportModal";
 import {
   tradeDocsTheme,
@@ -126,7 +127,7 @@ const iconBtnDanger =
  * =========================
  */
 export default function Page() {
-  const [activeTab, setActiveTab] = useState<"drafts" | "registered">("drafts");
+  const [activeTab, setActiveTab] = useState<"drafts" | "registered" | "reportes">("drafts");
   const [companyId, setCompanyId] = useState<string>("");
   const [role, setRole] = useState<"OWNER" | "EDITOR" | "LECTOR" | null>(null);
   const canEdit = role === "OWNER" || role === "EDITOR";
@@ -5069,15 +5070,31 @@ export default function Page() {
                     >
                       Registrados
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("reportes")}
+                      className={cls(
+                        "rounded-xl px-3 py-2 text-sm font-bold transition",
+                        activeTab === "reportes"
+                          ? "bg-[#123b63] text-white shadow"
+                          : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                      )}
+                    >
+                      Reportes
+                    </button>
                   </div>
 
                   <div className="mt-2 text-[11px] text-slate-500">
                     {activeTab === "drafts"
                       ? "Documentos en borrador pendientes de registrar."
-                      : "Documentos ya registrados o cancelados."}
+                      : activeTab === "registered"
+                      ? "Documentos ya registrados o cancelados."
+                      : "Exporta listados con filtros y columnas a medida."}
                   </div>
                 </div>
 
+                {activeTab !== "reportes" && (
                 <div className="flex flex-wrap items-center gap-2">
 
                   <button
@@ -5144,12 +5161,14 @@ export default function Page() {
                     </>
                   ) : null}
                 </div>
+                )}
               </div>
             </div>
 
-
             <div className="p-4">
-              {activeTab === "drafts" ? (
+              {activeTab === "reportes" ? (
+                <TradeDocsReportTab companyId={companyId} />
+              ) : activeTab === "drafts" ? (
                 <TradeDocsTable
                   rows={filteredDrafts}
                   loading={loadingDrafts}
