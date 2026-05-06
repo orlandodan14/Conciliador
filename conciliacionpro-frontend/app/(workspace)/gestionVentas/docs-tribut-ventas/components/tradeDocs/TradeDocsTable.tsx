@@ -255,17 +255,31 @@ export default function TradeDocsTable({
   onCancelRow,
   assertUniqueFiscalFolio,
   renderExpandedContent,
-  useInternalScroll = false,
+  useInternalScroll: _useInternalScroll = false,
   onReachEnd,
   loadingMore = false,
   hasMore = false,
 }: TradeDocsTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const tableRef = useRef<HTMLTableElement | null>(null);
-  const scrollWrapRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   const [sortKey, setSortKey] = useState<SortKey>("issue_date");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+
+  // Infinite scroll — IntersectionObserver sobre el sentinel al fondo de la tabla
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel || !hasMore || loadingMore) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) onReachEnd?.();
+      },
+      { rootMargin: "200px" }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, loadingMore, onReachEnd]);
 
   function toggleExpand(row: TradeDocsTableRow) {
     const willExpand = expandedId !== row.id;
@@ -275,20 +289,6 @@ export default function TradeDocsTable({
       window.setTimeout(() => {
         onExpandRow?.(row);
       }, 0);
-    }
-  }
-
-  function handleScrollWrap() {
-    if (!useInternalScroll) return;
-    if (!hasMore || loadingMore) return;
-
-    const el = scrollWrapRef.current;
-    if (!el) return;
-
-    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 120;
-
-    if (nearBottom) {
-      onReachEnd?.();
     }
   }
 
@@ -355,31 +355,9 @@ export default function TradeDocsTable({
     return data;
   }, [rows, sortKey, sortDirection]);
 
-  useEffect(() => {
-    const table = tableRef.current;
-    if (!table) return;
-
-    const noop = () => {};
-    const ro = new ResizeObserver(noop);
-    ro.observe(table);
-
-    return () => {
-      ro.disconnect();
-    };
-  }, []);
-
   return (
     <div className="mt-0 rounded-2xl bg-white shadow-[0_8px_30px_rgba(20,12,70,0.12)] ring-1 ring-slate-200/60">
-      <div
-        ref={scrollWrapRef}
-        onScroll={handleScrollWrap}
-        className={cls(
-          "w-full overflow-x-hidden rounded-2xl",
-          useInternalScroll
-            ? "max-h-[calc(100vh-320px)] overflow-y-auto"
-            : "overflow-y-visible"
-        )}
-      >
+      <div className="w-full overflow-x-hidden rounded-2xl overflow-y-visible">
         <table ref={tableRef} className="w-full table-fixed">
           <colgroup>
             <col style={{ width: "4%" }} />
@@ -765,11 +743,13 @@ export default function TradeDocsTable({
           </tbody>
         </table>
 
-        {loadingMore ? (
+        {loadingMore && (
           <div className="border-t bg-white px-3 py-3 text-center text-[12px] text-slate-500">
             Cargando más documentos...
           </div>
-        ) : null}
+        )}
+        {/* Sentinel para IntersectionObserver */}
+        <div ref={sentinelRef} className="h-1" aria-hidden="true" />
       </div>
     </div>
   );

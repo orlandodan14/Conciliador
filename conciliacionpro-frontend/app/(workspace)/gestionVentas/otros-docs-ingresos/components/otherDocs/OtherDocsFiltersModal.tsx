@@ -144,7 +144,7 @@ export default function OtherDocsFiltersModal({
             className={inputCls}
             value={filters.number}
             onChange={(e) => setFilters((f) => ({ ...f, number: e.target.value }))}
-            placeholder="001, 002..."
+            placeholder="1,2,3 o 1-3"
           />
         </div>
 

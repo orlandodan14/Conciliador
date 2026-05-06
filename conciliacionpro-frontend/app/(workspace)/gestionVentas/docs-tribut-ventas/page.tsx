@@ -364,112 +364,141 @@ export default function Page() {
       return !isRootDocRow;
     });
 
-    const rowSuggestion = getTradeDocSuggestion({
-      status: row.status,
-      balance: Number(row.balance ?? 0),
-    });
+    // ── Badge por ítem (event_type + item_status del RPC) ───────────────────
+    function itemStatusBadge(eventType: string, itemStatus: string | null | undefined) {
+      if (eventType === "PAYMENT") return { text: "Aplicado",  cls: "bg-emerald-100 text-emerald-800" };
+      const s = String(itemStatus || "").toUpperCase();
+      if (s === "VIGENTE")   return { text: "Vigente",   cls: "bg-emerald-100 text-emerald-800" };
+      if (s === "CANCELADO") return { text: "Cancelado", cls: "bg-slate-100 text-slate-700" };
+      if (s === "BORRADOR")  return { text: "Borrador",  cls: "bg-amber-100 text-amber-800" };
+      return                        { text: s || "—",    cls: "bg-slate-100 text-slate-600" };
+    }
+
+    // ── Sugerencia de acción (debajo de la tabla) ────────────────────────────
+    const actionSuggestion = (() => {
+      const s = String(row.status || "").toUpperCase();
+      const b = Number(row.balance ?? 0);
+      if (s === "CANCELADO") return null;
+      if (s === "BORRADOR")  return { text: "Registra el documento para continuar", cls: "bg-amber-100 text-amber-900" };
+      if (b === 0) return null;
+      if (b < 0) return { text: "Requiere gestionar devolución", cls: "bg-rose-100 text-rose-800" };
+      return            { text: "Requiere gestionar cobro",      cls: "bg-amber-100 text-amber-900" };
+    })();
 
     if (loading) {
       return <div className="text-[12px] text-slate-500">Cargando trazabilidad...</div>;
     }
 
     if (!items.length) {
-      return <div className="text-[12px] text-slate-500">No hay movimientos relacionados.</div>;
+      return actionSuggestion ? (
+        <div className="flex justify-end">
+          <span className={cls(
+            "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold",
+            actionSuggestion.cls
+          )}>
+            {actionSuggestion.text}
+          </span>
+        </div>
+      ) : null;
     }
 
     return (
-      <div className="overflow-hidden rounded-2xl ring-1 ring-slate-200/70">
-        <div className="grid grid-cols-[100px_140px_140px_180px_1fr_250px] bg-gradient-to-b from-slate-100 to-slate-50 text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#0b2b4f]">
-          <div className="px-3 py-2 border-r border-slate-200">Fecha</div>
-          <div className="px-3 py-2 border-r border-slate-200">Tipo</div>
-          <div className="px-3 py-2 border-r border-slate-200">Documento</div>
-          <div className="px-3 py-2 border-r border-slate-200 text-right">Monto</div>
-          <div className="px-3 py-2 border-r border-slate-200">Cómo afecta</div>
-          <div className="px-3 py-2">Sugerencia</div>
-        </div>
+      <div className="flex flex-col gap-2">
+        <div className="overflow-hidden rounded-2xl ring-1 ring-slate-200/70">
+          <div className="grid grid-cols-[100px_140px_140px_180px_1fr_200px] bg-gradient-to-b from-slate-100 to-slate-50 text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#0b2b4f]">
+            <div className="px-3 py-2 border-r border-slate-200">Fecha</div>
+            <div className="px-3 py-2 border-r border-slate-200">Tipo</div>
+            <div className="px-3 py-2 border-r border-slate-200">Documento</div>
+            <div className="px-3 py-2 border-r border-slate-200 text-right">Monto</div>
+            <div className="px-3 py-2 border-r border-slate-200">Cómo afecta</div>
+            <div className="px-3 py-2">Estado</div>
+          </div>
 
-        {items.map((item, idx) => {
-          const negative = Number(item.impact_sign || 0) < 0;
-          const amountText = `${negative ? "-" : "+"} ${formatNumber(Number(item.amount || 0), moneyDecimals)}`;
+          {items.map((item, idx) => {
+            const negative = Number(item.impact_sign || 0) < 0;
+            const amountText = `${negative ? "-" : "+"} ${formatNumber(Number(item.amount || 0), moneyDecimals)}`;
 
-          const typeLabel =
-            item.event_type === "PAYMENT"
-              ? "Pago"
-              : item.doc_type === "CREDIT_NOTE"
-              ? "Nota crédito"
-              : item.doc_type === "DEBIT_NOTE"
-              ? "Nota débito"
-              : item.doc_type === "DEVOLUCION"
-              ? "Devolución"
-              : "Documento";
+            const typeLabel =
+              item.event_type === "PAYMENT"
+                ? "Cobro"
+                : item.doc_type === "INVOICE"
+                ? "Factura"
+                : item.doc_type === "CREDIT_NOTE"
+                ? "Nota crédito"
+                : item.doc_type === "DEBIT_NOTE"
+                ? "Nota débito"
+                : item.doc_type === "DEVOLUCION"
+                ? "Devolución"
+                : "Documento";
 
-          const docLabel =
-            item.event_type === "PAYMENT"
-              ? "Pago aplicado"
-              : item.fiscal_doc_code
-              ? `${item.fiscal_doc_code} · ${item.display_folio || item.number || "—"}`
-              : item.display_folio || item.number || "—";
+            const docLabel =
+              item.event_type === "PAYMENT"
+                ? item.number || "Cobro aplicado"
+                : item.fiscal_doc_code
+                ? `${item.fiscal_doc_code} · ${item.display_folio || item.number || "—"}`
+                : item.display_folio || item.number || "—";
 
-          const affectsLabel =
-            item.affects_label || "—";
+            const affectsLabel = item.affects_label || "—";
+            const badge = itemStatusBadge(item.event_type, item.item_status);
 
-          const suggestionText = rowSuggestion.text;
-          const suggestionClass = rowSuggestion.className;
-
-          return (
-            <div
-              key={`${item.event_type}-${item.related_doc_id || ""}-${item.payment_id || ""}-${idx}`}
-              className={cls(
-                "grid grid-cols-[100px_140px_140px_180px_1fr_250px] text-[12px]",
-                idx % 2 === 0 ? "bg-white" : "bg-slate-50/70"
-              )}
-            >
-              <div className="px-3 py-2 border-t border-r border-slate-200/70 whitespace-nowrap">
-                {item.event_date || "—"}
-              </div>
-
-              <div className="px-3 py-2 border-t border-r border-slate-200/70 whitespace-nowrap">
-                <span className="font-semibold text-slate-800">{typeLabel}</span>
-              </div>
-
+            return (
               <div
-                className="px-3 py-2 border-t border-r border-slate-200/70 truncate whitespace-nowrap font-medium text-slate-900"
-                title={docLabel}
-              >
-                {docLabel}
-              </div>
-              
-              <div
+                key={`${item.event_type}-${item.related_doc_id || ""}-${item.payment_id || ""}-${idx}`}
                 className={cls(
-                  "px-3 py-2 border-t border-slate-200/70 text-right font-extrabold whitespace-nowrap",
-                  negative ? "text-rose-700" : "text-emerald-700"
+                  "grid grid-cols-[100px_140px_140px_180px_1fr_200px] text-[12px]",
+                  idx % 2 === 0 ? "bg-white" : "bg-slate-50/70"
                 )}
               >
-                {amountText}
-              </div>
-
-              <div
-                className="px-3 py-2 border-t border-r border-slate-200/70 truncate whitespace-nowrap text-slate-700"
-                title={affectsLabel}
-              >
-                {affectsLabel}
-              </div>
-
-              <div className="px-3 py-2 border-t border-r border-slate-200/70">
-                <span
-                  className={cls(
-                    "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold whitespace-nowrap",
-                    suggestionClass
-                  )}
-                  title={suggestionText}
+                <div className="px-3 py-2 border-t border-r border-slate-200/70 whitespace-nowrap">
+                  {item.event_date || "—"}
+                </div>
+                <div className="px-3 py-2 border-t border-r border-slate-200/70 whitespace-nowrap">
+                  <span className="font-semibold text-slate-800">{typeLabel}</span>
+                </div>
+                <div
+                  className="px-3 py-2 border-t border-r border-slate-200/70 truncate whitespace-nowrap font-medium text-slate-900"
+                  title={docLabel}
                 >
-                  {suggestionText}
-                </span>
+                  {docLabel}
+                </div>
+                <div
+                  className={cls(
+                    "px-3 py-2 border-t border-r border-slate-200/70 text-right font-extrabold whitespace-nowrap",
+                    negative ? "text-rose-700" : "text-emerald-700"
+                  )}
+                >
+                  {amountText}
+                </div>
+                <div
+                  className="px-3 py-2 border-t border-r border-slate-200/70 truncate whitespace-nowrap text-slate-700"
+                  title={affectsLabel}
+                >
+                  {affectsLabel}
+                </div>
+                <div className="px-3 py-2 border-t border-slate-200/70">
+                  <span className={cls(
+                    "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold whitespace-nowrap",
+                    badge.cls
+                  )}>
+                    {badge.text}
+                  </span>
+                </div>
               </div>
+            );
+          })}
+        </div>
 
-            </div>
-          );
-        })}
+        {/* ── Sugerencia de acción (debajo de la tabla) ──────────────────── */}
+        {actionSuggestion && (
+          <div className="flex justify-end">
+            <span className={cls(
+              "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold",
+              actionSuggestion.cls
+            )}>
+              {actionSuggestion.text}
+            </span>
+          </div>
+        )}
       </div>
     );
   }
@@ -4600,6 +4629,64 @@ export default function Page() {
       `¿Registrar ${selectedDraftIds.length} borrador(es) como VIGENTE y contabilizarlos masivamente?`
     );
     if (!ok) return;
+
+    // Pre-flight: validate segmentation for all selected docs before calling RPC
+    try {
+      const { data: docRows, error: docsError } = await supabase
+        .from("trade_docs")
+        .select("id, number, journal_entry_id")
+        .eq("company_id", companyId)
+        .in("id", selectedDraftIds);
+      if (docsError) throw docsError;
+
+      const jeIds = ((docRows as any[]) || [])
+        .map((d: any) => d.journal_entry_id)
+        .filter(Boolean);
+
+      if (jeIds.length > 0) {
+        const { data: lines, error: linesError } = await supabase
+          .from("journal_entry_lines")
+          .select("journal_entry_id, account_code_snapshot, branch_id, business_line_id, debit, credit")
+          .eq("company_id", companyId)
+          .in("journal_entry_id", jeIds);
+        if (linesError) throw linesError;
+
+        const docNumByJeId: Record<string, string> = {};
+        ((docRows as any[]) || []).forEach((d: any) => {
+          if (d.journal_entry_id) docNumByJeId[d.journal_entry_id] = d.number || d.id;
+        });
+
+        const segErrors: string[] = [];
+        ((lines as any[]) || []).forEach((l: any) => {
+          if (!(Number(l.debit) > 0) && !(Number(l.credit) > 0)) return;
+          const code = String(l.account_code_snapshot || "").trim().toUpperCase();
+          if (!code) return;
+          const pol = postingPolicyByAccountCode[code];
+          if (!pol) return;
+          const docNum = docNumByJeId[l.journal_entry_id] || "?";
+          if (pol.require_suc && !l.branch_id) {
+            segErrors.push(`Doc ${docNum} / cta ${code}: exige Sucursal (SUC)`);
+          }
+          if (pol.require_cu && !l.business_line_id) {
+            segErrors.push(`Doc ${docNum} / cta ${code}: exige Centro Utilidad (CU)`);
+          }
+        });
+
+        if (segErrors.length > 0) {
+          setMessages([{
+            level: "error",
+            text: `No se puede registrar masivamente — hay errores de segmentación: ${[...new Set(segErrors)].join(" · ")}. Edita cada documento y corrige el asiento contable antes de registrar.`,
+          }]);
+          return;
+        }
+      }
+    } catch (e: any) {
+      setMessages([{
+        level: "error",
+        text: `Error al validar segmentación antes de registrar: ${e?.message || "error inesperado"}`,
+      }]);
+      return;
+    }
 
     try {
       setProgressMode("REGISTER");

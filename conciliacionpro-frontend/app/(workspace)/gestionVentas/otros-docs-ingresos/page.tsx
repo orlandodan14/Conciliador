@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import * as XLSX from "xlsx";
 import type {
   OtherDocRow,
   OtherDocHeader,
@@ -50,7 +51,9 @@ import {
 import OtherDocsTable from "./components/otherDocs/OtherDocsTable";
 import OtherDocEditorModal from "./components/otherDocs/OtherDocEditorModal";
 import OtherDocsFiltersModal from "./components/otherDocs/OtherDocsFiltersModal";
+import OtherDocsImportModal from "./components/otherDocs/OtherDocsImportModal";
 import TradeDocCancelModal from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocCancelModal";
+import { CounterpartyCreateModal, Counterparty as CPCounterparty } from "@/app/(workspace)/components/counterparties/CounterpartyCreateModal";
 import {
   tradeDocsTheme,
   tradeDocsHeaderCell,
@@ -127,6 +130,7 @@ export default function Page() {
   const [defaultAccountCodeByProcess, setDefaultAccountCodeByProcess] = useState<Record<string, string>>({});
   const [postingPolicyByAccountCode, setPostingPolicyByAccountCode] = useState<Record<string, { require_suc: boolean; require_cu: boolean }>>({});
   const [counterpartyMap, setCounterpartyMap] = useState<Record<string, CounterpartyLite>>({});
+  const [cpModal, setCpModal] = useState<{ open: boolean; identifier: string }>({ open: false, identifier: "" });
 
   const defaultBranchId = useMemo(
     () => branches.find((b) => b.is_default)?.id ?? branches[0]?.id ?? "",
@@ -171,6 +175,27 @@ export default function Page() {
   const [bulkRegistering, setBulkRegistering] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
+  // ─── Barra de progreso (toast flotante) ───────────────────────────────────────
+  type ProgressMode = "SAVE_DRAFT" | "REGISTER" | "DELETE_DRAFT" | "IMPORT";
+  const [progressMode,    setProgressMode]    = useState<ProgressMode | null>(null);
+  const [progress,        setProgress]        = useState(0);
+  const [progressVisible, setProgressVisible] = useState(false);
+  const [progressDone,    setProgressDone]    = useState(false);
+
+  // ─── Carga masiva Excel ───────────────────────────────────────────────────────
+  type ImportValidationRow = {
+    status: "OK" | "ERROR";
+    row_no?: number | null;
+    number?: string | null;
+    message: string;
+  };
+  const [importOpen, setImportOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importPreview, setImportPreview] = useState<any[]>([]);
+  const [importErrors, setImportErrors] = useState<string[]>([]);
+  const [importValidationRows, setImportValidationRows] = useState<ImportValidationRow[]>([]);
+  const [importActionReport, setImportActionReport] = useState<{ fileName: string; rows: any[] } | null>(null);
+
   // ─── Timeline de docs relacionados (expanded row) ──────────────────────────
   type RelatedDocEvent = {
     event_date: string | null;
@@ -182,7 +207,8 @@ export default function Page() {
     amount: number;
     impact_sign: number;
     affects_label: string;
-    /** Marca el evento como contexto de origen: se muestra como banda informativa, no como evento financiero */
+    item_status: string | null;   // estado del ítem (doc: VIGENTE/CANCELADO…, pago: APPLIED)
+    /** Marca el evento como el documento de origen de esta devolución */
     is_origin_context?: boolean;
   };
   const [relatedByDocId, setRelatedByDocId] = useState<Record<string, RelatedDocEvent[]>>({});
@@ -531,11 +557,51 @@ export default function Page() {
     void loadRegisteredList(true);
   }, [companyId]);
 
+  // Auto-incremento de la barra de progreso mientras hay operación activa
+  useEffect(() => {
+    if (!saving && !bulkRegistering && !bulkDeleting && !importing) return;
+    setProgressVisible(true);
+    setProgressDone(false);
+    setProgress((prev) => (prev > 0 ? prev : 8));
+    const timer = window.setInterval(() => {
+      setProgress((prev) => {
+        if (prev >= 92) return prev;
+        if (prev < 35) return prev + 8;
+        if (prev < 60) return prev + 5;
+        if (prev < 80) return prev + 3;
+        return prev + 1;
+      });
+    }, 400);
+    return () => window.clearInterval(timer);
+  }, [saving, bulkRegistering, bulkDeleting, importing]);
+
   // ─── Load functions ───────────────────────────────────────────────────────────
+
+  function finishProgress() {
+    setProgress(100);
+    setProgressDone(true);
+    window.setTimeout(() => {
+      setProgressVisible(false);
+      setProgressDone(false);
+      setProgress(0);
+      setProgressMode(null);
+    }, 1200);
+  }
+
+  function resetProgressNow() {
+    setProgressVisible(false);
+    setProgressDone(false);
+    setProgress(0);
+    setProgressMode(null);
+  }
 
   function showMsg(level: "error" | "warn", text: string) {
     setPageMsg({ level, text });
-    window.setTimeout(() => setPageMsg(null), 6000);
+    // Los errores no se auto-cierran (el usuario los cierra con la X).
+    // Los avisos (warn) desaparecen solos después de 8 segundos.
+    if (level !== "error") {
+      window.setTimeout(() => setPageMsg(null), 8000);
+    }
   }
 
   function showModalMsg(level: "error" | "success", text: string) {
@@ -752,6 +818,7 @@ export default function Page() {
       return null;
     }
 
+    setProgressMode("SAVE_DRAFT");
     setSaving(true);
     try {
       const userId = await getAuthUserId();
@@ -822,7 +889,10 @@ export default function Page() {
     if (result) {
       await loadDraftsList(true);
       setEditorOpen(false);
+      finishProgress();
       showMsg("warn", "Borrador guardado.");
+    } else {
+      resetProgressNow();
     }
   }
 
@@ -859,7 +929,8 @@ export default function Page() {
     }
 
     const result = await persistDoc();
-    if (!result) return;
+    if (!result) { resetProgressNow(); return; }
+    setProgressMode("REGISTER");
     setSaving(true);
     try {
       await registerOtherDoc({
@@ -870,8 +941,10 @@ export default function Page() {
       setEditorOpen(false);
       await loadDraftsList(true);
       await loadRegisteredList(true);
+      finishProgress();
       showMsg("warn", "Documento registrado correctamente.");
     } catch (e: any) {
+      resetProgressNow();
       showModalMsg("error", e?.message || "No se pudo registrar el documento.");
     } finally {
       setSaving(false);
@@ -904,6 +977,67 @@ export default function Page() {
       `¿Registrar ${selectedDraftIds.length} borrador(es) como VIGENTE y contabilizarlos?`
     )) return;
 
+    // ── Pre-flight: validar segmentación de todos los docs seleccionados ────────
+    try {
+      // 1. Obtener journal_entry_id y número de cada doc seleccionado
+      const { data: docRows, error: docsError } = await supabase
+        .from("trade_docs")
+        .select("id, number, journal_entry_id")
+        .eq("company_id", companyId)
+        .in("id", selectedDraftIds);
+      if (docsError) throw docsError;
+
+      const jeIds = ((docRows as any[]) || [])
+        .map((d: any) => d.journal_entry_id)
+        .filter(Boolean);
+
+      if (jeIds.length > 0) {
+        // 2. Obtener líneas del asiento con monto > 0
+        const { data: lines, error: linesError } = await supabase
+          .from("journal_entry_lines")
+          .select("journal_entry_id, account_code_snapshot, branch_id, business_line_id, debit, credit")
+          .eq("company_id", companyId)
+          .in("journal_entry_id", jeIds);
+        if (linesError) throw linesError;
+
+        // 3. Mapa JE → número de doc para mensajes claros
+        const docNumByJeId: Record<string, string> = {};
+        ((docRows as any[]) || []).forEach((d: any) => {
+          if (d.journal_entry_id) docNumByJeId[d.journal_entry_id] = d.number || d.id;
+        });
+
+        // 4. Validar cada línea con monto contra las políticas de imputación
+        const segErrors: string[] = [];
+        ((lines as any[]) || []).forEach((l: any) => {
+          if (!(Number(l.debit) > 0) && !(Number(l.credit) > 0)) return; // solo líneas con monto
+          const code = String(l.account_code_snapshot || "").trim().toUpperCase();
+          if (!code) return;
+          const pol = postingPolicyByAccountCode[code];
+          if (!pol) return;
+          const docNum = docNumByJeId[l.journal_entry_id] || "?";
+          if (pol.require_suc && !l.branch_id) {
+            segErrors.push(`Doc ${docNum} / cta ${code}: exige Sucursal (SUC)`);
+          }
+          if (pol.require_cu && !l.business_line_id) {
+            segErrors.push(`Doc ${docNum} / cta ${code}: exige Centro Utilidad (CU)`);
+          }
+        });
+
+        if (segErrors.length > 0) {
+          showMsg(
+            "error",
+            `No se puede registrar masivamente — hay errores de segmentación: ${[...new Set(segErrors)].join(" · ")}. Edita cada documento y corrige el asiento contable antes de registrar.`
+          );
+          return;
+        }
+      }
+    } catch (e: any) {
+      showMsg("error", `Error al validar segmentación antes de registrar: ${e?.message || "error inesperado"}`);
+      return;
+    }
+    // ────────────────────────────────────────────────────────────────────────────
+
+    setProgressMode("REGISTER");
     setBulkRegistering(true);
     try {
       const { data, error } = await supabase.rpc("bulk_register_trade_docs", {
@@ -920,6 +1054,7 @@ export default function Page() {
       setSelectedDrafts({});
       await loadDraftsList(true);
       await loadRegisteredList(true);
+      finishProgress();
 
       if (errorCount > 0) {
         const detail = errors.map((e) => e.message || "Error desconocido").join(" · ");
@@ -931,6 +1066,7 @@ export default function Page() {
         showMsg("warn", `${okCount} documento(s) registrado(s) correctamente.`);
       }
     } catch (e: any) {
+      resetProgressNow();
       showMsg("error", e?.message || "Error en registro masivo.");
     } finally {
       setBulkRegistering(false);
@@ -943,31 +1079,73 @@ export default function Page() {
       `¿Eliminar ${selectedDraftIds.length} borrador(es)? Esta acción no se puede deshacer.`
     )) return;
 
+    setProgressMode("DELETE_DRAFT");
     setBulkDeleting(true);
     const ids = [...selectedDraftIds];
-    let okCount = 0, errorCount = 0;
     try {
-      for (const id of ids) {
-        try {
-          await deleteOtherDoc(companyId, id);
-          okCount++;
-        } catch {
-          errorCount++;
-        }
-      }
+      // Una sola llamada RPC elimina todos en una transacción DB (mucho más rápido que N round-trips)
+      const { data, error } = await supabase.rpc("bulk_delete_other_docs", {
+        _company_id:    companyId,
+        _trade_doc_ids: ids,
+      });
+      if (error) throw error;
+
+      const deletedCount = Number((data as any)?.deleted_count ?? 0);
+      const skippedCount = Number((data as any)?.skipped_count ?? 0);
+
       setSelectedDrafts({});
       await loadDraftsList(true);
-      if (errorCount > 0) {
-        showMsg("error", `${okCount} eliminado(s), ${errorCount} no se pudieron eliminar.`);
+      finishProgress();
+
+      if (skippedCount > 0) {
+        showMsg("warn", `${deletedCount} borrador(es) eliminado(s). ${skippedCount} no se pudieron eliminar (ya no están en estado BORRADOR).`);
       } else {
-        showMsg("warn", `${okCount} borrador(es) eliminado(s).`);
+        showMsg("warn", `${deletedCount} borrador(es) eliminado(s).`);
       }
+    } catch (e: any) {
+      resetProgressNow();
+      showMsg("error", e?.message || "Error al eliminar borradores.");
     } finally {
       setBulkDeleting(false);
     }
   }
 
   // ─── Cancel ───────────────────────────────────────────────────────────────────
+
+  /** Abre el modal de cancelación desde el viewer del editor modal */
+  function openCreateCounterparty(identifier: string) {
+    setCpModal({ open: true, identifier: normalizeIdentifier(identifier) });
+  }
+
+  function onCounterpartyCreated(created: CPCounterparty) {
+    const key = normalizeIdentifier(created.identifier);
+    setCounterpartyMap((m) => ({ ...m, [key]: created }));
+  }
+
+  function openCancelFromEditor() {
+    if (!editorDocId || !canEdit || editorHeader.status !== "VIGENTE") return;
+    // Construimos un OtherDocRow mínimo desde el estado del editor
+    const row: OtherDocRow = {
+      id: editorDocId,
+      company_id: companyId,
+      doc_type: editorHeader.doc_type,
+      status: editorHeader.status,
+      non_fiscal_doc_code: editorHeader.non_fiscal_doc_code || null,
+      issue_date: editorHeader.issue_date || null,
+      series: editorHeader.series || null,
+      number: editorHeader.number || null,
+      reference: editorHeader.reference || null,
+      counterparty_identifier_snapshot: editorHeader.counterparty_identifier || null,
+      counterparty_name_snapshot: editorHeader.counterparty_name || null,
+      grand_total: Number(editorHeader.grand_total || 0),
+      balance: 0,
+      origin_doc_id: editorHeader.origin_doc_id || null,
+      journal_entry_id: editorJeId || null,
+      created_at: null,
+    };
+    setEditorOpen(false);
+    void openCancel(row);
+  }
 
   async function openCancel(row: OtherDocRow) {
     setCancelDocRow(row);
@@ -1196,6 +1374,232 @@ export default function Page() {
       }
     : null;
 
+  // ─── Carga masiva Excel — funciones ──────────────────────────────────────────
+
+  function downloadImportTemplate() {
+    window.open("/templates/Plantilla_carga_masiva_otros_docs_ingresos.xlsx", "_blank");
+  }
+
+  function openImport() {
+    setImportErrors([]);
+    setImportValidationRows([]);
+    setImportPreview([]);
+    setImportActionReport(null);
+    setImportOpen(true);
+  }
+
+  function closeImport() {
+    setImportOpen(false);
+    setImportErrors([]);
+    setImportValidationRows([]);
+    setImportPreview([]);
+    (window as any).__otherDocImportParsed = null;
+  }
+
+  function exportImportReport() {
+    if (!importActionReport) return;
+    const rows = importActionReport.rows.map((r: any) => ({
+      Fila: r.row_no ?? "",
+      Estado: r.status ?? "",
+      Número: r.number ?? "",
+      Mensaje: r.message ?? "",
+      trade_doc_id: r.trade_doc_id ?? "",
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "REPORTE");
+    XLSX.writeFile(wb, importActionReport.fileName);
+  }
+
+  async function onPickOtherDocExcel(file: File) {
+    setImportErrors([]);
+    setImportValidationRows([]);
+    setImportPreview([]);
+    (window as any).__otherDocImportParsed = null;
+
+    try {
+      const ab = await file.arrayBuffer();
+      const wb = XLSX.read(ab, { type: "array" });
+
+      const wsDocs = wb.Sheets["DOCUMENTOS"];
+      if (!wsDocs) throw new Error("Falta la hoja DOCUMENTOS en el archivo.");
+
+      // La plantilla tiene claves técnicas en la fila 1 y datos desde la fila 2
+      // (mismo formato que Documentos Tributarios).
+      const rawDocs = XLSX.utils.sheet_to_json(wsDocs, { defval: "" }) as Record<string, any>[];
+
+      if (rawDocs.length === 0) throw new Error("La hoja DOCUMENTOS está vacía (los datos van desde la fila 2).");
+
+      const normalizeDate = (v: any): string => {
+        if (!v) return "";
+        if (typeof v === "number") {
+          const d = XLSX.SSF.parse_date_code(v);
+          if (!d) return "";
+          return `${d.y}-${String(d.m).padStart(2, "0")}-${String(d.d).padStart(2, "0")}`;
+        }
+        const s = String(v).trim();
+        // Si es DD/MM/YYYY → convertir
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+          const [dd, mm, yyyy] = s.split("/");
+          return `${yyyy}-${mm}-${dd}`;
+        }
+        return s.slice(0, 10);
+      };
+
+      const normalizeDocType = (v: any): string => {
+        const x = String(v ?? "").trim().toUpperCase();
+        if (["DEV", "DEVOLUCION", "DEVOLUCIÓN"].includes(x)) return "DEVOLUCION";
+        return "OTRO_INGRESO";
+      };
+
+      const docs = rawDocs.map((r, idx) => {
+        const docType = normalizeDocType(r.doc_type ?? r.tipo_doc ?? "");
+        const number  = String(r.number ?? r.numero ?? r.folio ?? "").trim();
+        const payAmt  = Number(r.payment_amount ?? r.monto_pago ?? 0);
+        const originNum = String(r.origin_number ?? r.numero_origen ?? "").trim();
+
+        return {
+          source_row_no: idx + 2, // fila 1 = encabezados, datos desde fila 2
+          doc_type: docType,
+          non_fiscal_doc_code: String(r.non_fiscal_doc_code ?? r.codigo_doc ?? "").trim() || null,
+          issue_date: normalizeDate(r.issue_date ?? r.fecha_emision),
+          due_date:   normalizeDate(r.due_date ?? r.fecha_vencimiento),
+          series:     String(r.series ?? r.serie ?? "").trim() || null,
+          number,
+          currency_code: String(r.currency_code ?? r.moneda ?? baseCurrency ?? "CLP").trim().toUpperCase(),
+          branch_code:   String(r.branch_code ?? r.sucursal ?? "").trim() || null,
+          counterparty_identifier: String(r.counterparty_identifier ?? r.rut ?? r.rfc ?? "").trim(),
+          counterparty_name:       String(r.counterparty_name ?? r.nombre ?? r.razon_social ?? "").trim(),
+          grand_total: Number(r.grand_total ?? r.monto_total ?? r.monto ?? 0),
+          reference:   String(r.reference ?? r.referencia ?? "").trim() || null,
+          origin_doc_type:       String(r.origin_doc_type ?? r.tipo_origen ?? "").trim() || null,
+          origin_fiscal_doc_code: String(r.origin_fiscal_doc_code ?? r.codigo_fiscal_origen ?? "").trim() || null,
+          origin_number: originNum || null,
+          payment_date:      normalizeDate(r.payment_date ?? r.fecha_pago),
+          payment_method:    String(r.payment_method ?? r.metodo_pago ?? "").trim().toUpperCase() || null,
+          payment_amount:    payAmt,
+          payment_reference: String(r.payment_reference ?? r.referencia_pago ?? "").trim() || null,
+          card_kind:         String(r.card_kind  ?? r.tipo_tarjeta ?? "").trim().toUpperCase() || null,
+          card_last4:        String(r.card_last4 ?? r.ultimos_4 ?? "").trim().replace(/\D/g, "").slice(0, 4) || null,
+          auth_code:         String(r.auth_code  ?? r.codigo_autorizacion ?? "").trim() || null,
+          account_debe:  String(r.account_debe ?? r.cuenta_debe ?? "").trim() || null,
+          account_haber: String(r.account_haber ?? r.cuenta_haber ?? "").trim() || null,
+          branch_code_debe:  String(r.branch_code_debe ?? "").trim() || null,
+          branch_code_haber: String(r.branch_code_haber ?? "").trim() || null,
+          business_line_code_debe:  String(r.business_line_code_debe ?? "").trim() || null,
+          business_line_code_haber: String(r.business_line_code_haber ?? "").trim() || null,
+          has_payment: payAmt > 0,
+          has_origin:  !!originNum,
+        };
+      });
+
+      // Validación local
+      const validationRows: ImportValidationRow[] = [];
+      docs.forEach((d) => {
+        const fila = `fila ${d.source_row_no}`;
+        if (!d.issue_date) validationRows.push({ status: "ERROR", row_no: d.source_row_no, number: d.number, message: `issue_date vacío (${fila}).` });
+        if (!d.number)     validationRows.push({ status: "ERROR", row_no: d.source_row_no, number: d.number, message: `number vacío (${fila}).` });
+        if (!d.counterparty_identifier) validationRows.push({ status: "ERROR", row_no: d.source_row_no, number: d.number, message: `counterparty_identifier vacío (${fila}).` });
+        if (!d.counterparty_name)       validationRows.push({ status: "ERROR", row_no: d.source_row_no, number: d.number, message: `counterparty_name vacío (${fila}).` });
+        if (!d.grand_total || d.grand_total <= 0) validationRows.push({ status: "ERROR", row_no: d.source_row_no, number: d.number, message: `grand_total debe ser > 0 (${fila}).` });
+        if (!d.account_debe)  validationRows.push({ status: "ERROR", row_no: d.source_row_no, number: d.number, message: `account_debe vacío (${fila}).` });
+        if (!d.account_haber) validationRows.push({ status: "ERROR", row_no: d.source_row_no, number: d.number, message: `account_haber vacío (${fila}).` });
+        if (d.doc_type === "DEVOLUCION" && !d.origin_number) {
+          validationRows.push({ status: "ERROR", row_no: d.source_row_no, number: d.number, message: `DEVOLUCION requiere origin_number (${fila}).` });
+        }
+        if (d.has_payment && !d.payment_method) {
+          validationRows.push({ status: "ERROR", row_no: d.source_row_no, number: d.number, message: `payment_amount > 0 pero payment_method vacío (${fila}).` });
+        }
+        if (d.has_payment && d.payment_amount > d.grand_total) {
+          validationRows.push({ status: "ERROR", row_no: d.source_row_no, number: d.number, message: `payment_amount (${d.payment_amount}) supera grand_total (${d.grand_total}) en ${fila}.` });
+        }
+      });
+
+      setImportValidationRows(validationRows);
+      setImportErrors(validationRows.length > 0 ? [`${validationRows.length} error(es) de validación detectados.`] : []);
+      setImportActionReport(
+        validationRows.length > 0
+          ? { fileName: "reporte_validacion_otros_docs.xlsx", rows: validationRows }
+          : { fileName: "reporte_validacion_otros_docs.xlsx", rows: [{ status: "OK", message: `Validación OK. Documentos: ${docs.length}.` }] }
+      );
+      setImportPreview(docs.slice(0, 500));
+      (window as any).__otherDocImportParsed = { fileName: file.name, docs };
+    } catch (e: any) {
+      const msg = e?.message || "No se pudo leer el archivo.";
+      setImportValidationRows([{ status: "ERROR", message: msg }]);
+      setImportErrors([msg]);
+      setImportActionReport({ fileName: "reporte_validacion_otros_docs.xlsx", rows: [{ status: "ERROR", message: msg }] });
+      setImportPreview([]);
+      (window as any).__otherDocImportParsed = null;
+    }
+  }
+
+  async function confirmOtherDocImport() {
+    if (!companyId || !canEdit) return;
+    const parsed = (window as any).__otherDocImportParsed;
+    if (!parsed || !parsed.docs?.length) return;
+    if (importValidationRows.some((r) => r.status === "ERROR")) return;
+
+    setProgressMode("IMPORT");
+    setImporting(true);
+    try {
+      const BATCH = 100;
+      const docs: any[] = parsed.docs;
+      let okTotal = 0;
+      let errorTotal = 0;
+      const allResults: any[] = [];
+
+      for (let i = 0; i < docs.length; i += BATCH) {
+        const chunk = docs.slice(i, i + BATCH);
+        // Limpiar campos de previsualización antes de enviar al RPC
+        const payload = chunk.map(({ source_row_no: _r, has_payment: _p, has_origin: _o, ...rest }) => rest);
+
+        const { data, error } = await supabase.rpc("process_other_doc_import_batch", {
+          p_company_id: companyId,
+          p_docs: payload,
+        });
+        if (error) throw error;
+
+        okTotal    += Number((data as any)?.ok_count    ?? 0);
+        errorTotal += Number((data as any)?.error_count ?? 0);
+        const results = Array.isArray((data as any)?.results) ? (data as any).results : [];
+        allResults.push(...results);
+      }
+
+      const reportRows = allResults.map((r: any) => ({
+        status:       r.status ?? "OK",
+        row_no:       r.row_no ?? null,
+        number:       r.number ?? null,
+        message:      r.message ?? "",
+        trade_doc_id: r.trade_doc_id ?? null,
+      }));
+
+      setImportActionReport({
+        fileName: "reporte_importacion_otros_docs.xlsx",
+        rows: reportRows.length > 0 ? reportRows : [{ status: errorTotal > 0 ? "ERROR" : "OK", message: `OK: ${okTotal}. Errores: ${errorTotal}.` }],
+      });
+
+      closeImport();
+      await loadDraftsList(true);
+      await loadRegisteredList(true);
+      finishProgress();
+
+      const msg = errorTotal > 0
+        ? `Importación finalizada. OK: ${okTotal} / Errores: ${errorTotal}. Revisa el reporte exportado.`
+        : `Importación exitosa: ${okTotal} documento(s) creado(s) como borradores.`;
+      showMsg(errorTotal > 0 ? "error" : "warn", msg);
+
+      if (reportRows.some((r: any) => r.status === "ERROR")) {
+        setImportActionReport({ fileName: "reporte_importacion_otros_docs.xlsx", rows: reportRows });
+      }
+    } catch (e: any) {
+      resetProgressNow();
+      showMsg("error", e?.message || "Error durante la importación masiva.");
+    } finally {
+      setImporting(false);
+    }
+  }
+
   // ─── Related docs loader para expanded row ───────────────────────────────────
 
   async function loadRelatedDocs(row: OtherDocRow) {
@@ -1210,7 +1614,7 @@ export default function Page() {
       if (row.origin_doc_id) {
         const { data: originDoc } = await supabase
           .from("trade_docs")
-          .select("id,doc_type,fiscal_doc_code,number,series,issue_date,grand_total,doc_class,non_fiscal_doc_code")
+          .select("id,doc_type,fiscal_doc_code,number,series,issue_date,grand_total,doc_class,non_fiscal_doc_code,status")
           .eq("id", row.origin_doc_id)
           .single();
         if (originDoc) {
@@ -1231,6 +1635,7 @@ export default function Page() {
             amount: Math.abs(Number((originDoc as any).grand_total || 0)),
             impact_sign: -1,
             affects_label: "Documento origen",
+            item_status: (originDoc as any).status || null,
             is_origin_context: true,
           });
         }
@@ -1250,10 +1655,11 @@ export default function Page() {
           doc_type: null,
           non_fiscal_doc_code: null,
           number: p?.reference || null,
-          label: "Pago aplicado",
+          label: row.doc_type === "DEVOLUCION" ? "Pago aplicado" : "Cobro aplicado",
           amount: Math.abs(Number(a.allocated_amount || 0)),
           impact_sign: -1,
-          affects_label: "Pago aplicado al documento",
+          affects_label: row.doc_type === "DEVOLUCION" ? "Pago aplicado al documento" : "Cobro aplicado al documento",
+          item_status: "APPLIED",
         });
       });
 
@@ -1270,42 +1676,41 @@ export default function Page() {
 
   function renderDocExpandedContent(row: OtherDocRow) {
     const loading = relatedLoadingByDocId[row.id];
-    const items = relatedByDocId[row.id];
+    const items   = relatedByDocId[row.id];
 
     if (loading) {
       return <div className="text-[12px] text-slate-500">Cargando información relacionada...</div>;
     }
-
     if (!items) {
       return <div className="text-[12px] text-slate-400">Sin información relacionada cargada.</div>;
     }
 
-    const originItem = items.find((i) => i.is_origin_context);
+    const originItem   = items.find((i) => i.is_origin_context);
     const paymentItems = items.filter((i) => !i.is_origin_context && i.event_type === "PAYMENT");
 
-    const balance = Number(row.balance ?? row.grand_total ?? 0);
+    const balance  = Number(row.balance ?? row.grand_total ?? 0);
     const isReturn = row.doc_type === "DEVOLUCION";
+    const status   = String(row.status || "").toUpperCase();
 
-    const suggestionText =
-      row.status === "BORRADOR"
-        ? "Borrador — registrar para activar"
-        : row.status === "CANCELADO"
-        ? "Cancelado"
-        : balance === 0
-        ? "Saldado"
-        : isReturn
-        ? "Devolución pendiente de pago"
-        : "Pendiente de cobro";
-    const suggestionClass =
-      row.status === "BORRADOR"
-        ? "bg-amber-100 text-amber-800"
-        : row.status === "CANCELADO"
-        ? "bg-slate-100 text-slate-700"
-        : balance === 0
-        ? "bg-emerald-100 text-emerald-800"
-        : "bg-rose-100 text-rose-800";
+    // ── Estado por fila (columna Estado) ────────────────────────────────────
+    function itemStatusBadge(eventType: string, itemStatus: string | null | undefined) {
+      if (eventType === "PAYMENT") return { text: "Aplicado",  cls: "bg-emerald-100 text-emerald-800" };
+      const s = String(itemStatus || "").toUpperCase();
+      if (s === "VIGENTE")   return { text: "Vigente",   cls: "bg-emerald-100 text-emerald-800" };
+      if (s === "CANCELADO") return { text: "Cancelado", cls: "bg-slate-100 text-slate-700" };
+      if (s === "BORRADOR")  return { text: "Borrador",  cls: "bg-amber-100 text-amber-800" };
+      return                        { text: s || "—",    cls: "bg-slate-100 text-slate-600" };
+    }
 
-    // Etiqueta de tipo para el doc origen
+    // ── Sugerencia de acción (debajo de la tabla) ────────────────────────────
+    const actionSuggestion = (() => {
+      if (status === "CANCELADO") return null;
+      if (status === "BORRADOR")  return { text: "Registra el documento para continuar", cls: "bg-amber-100 text-amber-900" };
+      if (balance <= 0) return null;
+      if (isReturn) return { text: "Gestionar pago devolución al cliente", cls: "bg-rose-100 text-rose-800" };
+      return               { text: "Requiere gestionar cobro",             cls: "bg-amber-100 text-amber-900" };
+    })();
+
     function originTypeLabel(docType: string | null) {
       if (docType === "CREDIT_NOTE")  return "Nota de crédito";
       if (docType === "DEBIT_NOTE")   return "Nota de débito";
@@ -1315,100 +1720,198 @@ export default function Page() {
       return "Documento";
     }
 
+    // Unificamos origen + pagos en una sola lista de filas (igual que tributarios)
+    const tableItems = [
+      ...(originItem ? [originItem] : []),
+      ...paymentItems,
+    ];
+
     return (
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-2">
 
-        {/* ── Banda de contexto: documento origen ─────────────────────────── */}
-        {originItem && (
-          <div className="rounded-xl border border-sky-200/70 bg-sky-50/60 px-4 py-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-[12px]">
-            <span className="font-extrabold uppercase tracking-wide text-[10px] text-sky-700">
-              Documento origen
-            </span>
-            <span className="font-semibold text-slate-800">
-              {originTypeLabel(originItem.doc_type)}
-            </span>
-            <span className="text-slate-700">{originItem.label || "—"}</span>
-            {originItem.event_date && (
-              <span className="text-slate-500">Fecha: {originItem.event_date}</span>
-            )}
-            <span className="text-slate-500">
-              Monto: <span className="font-semibold text-slate-800">{formatNumber(originItem.amount, moneyDecimals)}</span>
-            </span>
-          </div>
-        )}
-
-        {/* ── Tabla de pagos ───────────────────────────────────────────────── */}
-        <div className="overflow-hidden rounded-xl ring-1 ring-slate-200/70">
-          {/* Header tabla */}
-          <div className="grid grid-cols-[110px_130px_1fr_160px_220px] bg-gradient-to-b from-slate-100 to-slate-50 text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#0b2b4f]">
+        {/* ── Tabla unificada (mismo formato que docs tributarios) ──────────── */}
+        {tableItems.length > 0 && (
+        <div className="overflow-hidden rounded-2xl ring-1 ring-slate-200/70">
+          <div className="grid grid-cols-[100px_140px_140px_180px_1fr_200px] bg-gradient-to-b from-slate-100 to-slate-50 text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#0b2b4f]">
             <div className="px-3 py-2 border-r border-slate-200">Fecha</div>
             <div className="px-3 py-2 border-r border-slate-200">Tipo</div>
-            <div className="px-3 py-2 border-r border-slate-200">Referencia</div>
-            <div className="px-3 py-2 border-r border-slate-200 text-right">Monto pagado</div>
+            <div className="px-3 py-2 border-r border-slate-200">Documento</div>
+            <div className="px-3 py-2 border-r border-slate-200 text-right">Monto</div>
+            <div className="px-3 py-2 border-r border-slate-200">Cómo afecta</div>
             <div className="px-3 py-2">Estado</div>
           </div>
 
-          {/* Sin pagos */}
-          {paymentItems.length === 0 ? (
-            <div className="px-4 py-4 text-[12px] text-slate-500 bg-white border-t border-slate-200/70">
-              Sin pagos registrados aún.
-            </div>
-          ) : (
-            paymentItems.map((item, idx) => (
-              <div
-                key={idx}
-                className={cls(
-                  "grid grid-cols-[110px_130px_1fr_160px_220px] text-[12px]",
-                  idx % 2 === 0 ? "bg-white" : "bg-slate-50/70"
-                )}
-              >
-                <div className="px-3 py-2 border-t border-r border-slate-200/70 whitespace-nowrap">
-                  {item.event_date || "—"}
-                </div>
-                <div className="px-3 py-2 border-t border-r border-slate-200/70 font-semibold text-slate-700">
-                  Pago
-                </div>
-                <div className="px-3 py-2 border-t border-r border-slate-200/70 truncate text-slate-600" title={item.number || ""}>
-                  {item.number || "—"}
-                </div>
-                <div className="px-3 py-2 border-t border-r border-slate-200/70 text-right font-extrabold text-emerald-700 whitespace-nowrap">
-                  − {formatNumber(item.amount, moneyDecimals)}
-                </div>
-                <div className="px-3 py-2 border-t border-slate-200/70">
-                  {idx === paymentItems.length - 1 && (
-                    <span className={cls(
-                      "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold whitespace-nowrap",
-                      suggestionClass
-                    )}>
-                      {suggestionText}
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))
-          )}
+          {tableItems.map((item, idx) => {
+              const isOrigin = !!item.is_origin_context;
 
-          {/* Si hay pagos, muestra la sugerencia en la última fila (ya incluida arriba) */}
-          {/* Si NO hay pagos pero el doc está registrado, mostrar sugerencia aparte */}
-          {paymentItems.length === 0 && row.status !== "BORRADOR" && (
-            <div className="px-4 py-2 bg-white border-t border-slate-200/70 flex justify-end">
-              <span className={cls(
-                "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold whitespace-nowrap",
-                suggestionClass
-              )}>
-                {suggestionText}
-              </span>
-            </div>
-          )}
+              const typeLabel    = isOrigin ? originTypeLabel(item.doc_type) : isReturn ? "Pago" : "Cobro";
+              const docLabel     = isOrigin
+                ? (item.label || item.number || "Doc. origen")
+                : (item.number || item.label || (isReturn ? "Pago aplicado" : "Cobro aplicado"));
+              const affectsLabel = isOrigin ? "Documento origen de la devolución" : "Reduce saldo pendiente";
+
+              // Monto: origen = positivo (monto original), pago = negativo (reduce saldo)
+              const amountNode = isOrigin
+                ? <span className="font-extrabold text-slate-800 whitespace-nowrap">
+                    {formatNumber(item.amount, moneyDecimals)}
+                  </span>
+                : <span className="font-extrabold text-emerald-700 whitespace-nowrap">
+                    − {formatNumber(item.amount, moneyDecimals)}
+                  </span>;
+
+              // Fila origen con fondo celeste (igual que NC/ND en tributarios)
+              const rowBg = isOrigin
+                ? "bg-sky-50/70"
+                : idx % 2 === 0 ? "bg-white" : "bg-slate-50/70";
+
+              return (
+                <div
+                  key={idx}
+                  className={cls(
+                    "grid grid-cols-[100px_140px_140px_180px_1fr_200px] text-[12px]",
+                    rowBg
+                  )}
+                >
+                  <div className="px-3 py-2 border-t border-r border-slate-200/70 whitespace-nowrap">
+                    {item.event_date || "—"}
+                  </div>
+                  <div className="px-3 py-2 border-t border-r border-slate-200/70 whitespace-nowrap">
+                    <span className="font-semibold text-slate-800">{typeLabel}</span>
+                  </div>
+                  <div
+                    className="px-3 py-2 border-t border-r border-slate-200/70 truncate whitespace-nowrap font-medium text-slate-900"
+                    title={docLabel}
+                  >
+                    {docLabel}
+                  </div>
+                  <div className="px-3 py-2 border-t border-r border-slate-200/70 text-right">
+                    {amountNode}
+                  </div>
+                  <div className="px-3 py-2 border-t border-r border-slate-200/70 truncate whitespace-nowrap text-slate-700">
+                    {affectsLabel}
+                  </div>
+                  <div className="px-3 py-2 border-t border-slate-200/70">
+                    {(() => {
+                      const badge = itemStatusBadge(item.event_type, item.item_status);
+                      return (
+                        <span className={cls(
+                          "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold whitespace-nowrap",
+                          badge.cls
+                        )}>
+                          {badge.text}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                </div>
+              );
+            })}
         </div>
+        )}
+
+        {/* ── Sugerencia de acción (debajo de la tabla) ────────────────────── */}
+        {actionSuggestion && (
+          <div className="flex justify-end">
+            <span className={cls(
+              "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold",
+              actionSuggestion.cls
+            )}>
+              {actionSuggestion.text}
+            </span>
+          </div>
+        )}
       </div>
     );
+  }
+
+  // ─── Textos del progreso ─────────────────────────────────────────────────────
+
+  function getProgressTitle(mode: ProgressMode | null, done: boolean) {
+    if (done) {
+      switch (mode) {
+        case "SAVE_DRAFT":   return "Guardado completado";
+        case "DELETE_DRAFT": return "Eliminación completada";
+        case "REGISTER":     return "Registro completado";
+        case "IMPORT":       return "Importación completada";
+        default:             return "Proceso completado";
+      }
+    }
+    switch (mode) {
+      case "SAVE_DRAFT":   return "Guardando borrador";
+      case "DELETE_DRAFT": return "Eliminando borradores";
+      case "REGISTER":     return "Registrando documento";
+      case "IMPORT":       return "Procesando importación";
+      default:             return "Procesando";
+    }
+  }
+
+  function getProgressDescription(mode: ProgressMode | null, done: boolean) {
+    if (done) return "El proceso terminó correctamente.";
+    switch (mode) {
+      case "SAVE_DRAFT":   return "El sistema está guardando el borrador.";
+      case "DELETE_DRAFT": return "El sistema está eliminando los borradores seleccionados.";
+      case "REGISTER":     return "El sistema está contabilizando el documento.";
+      case "IMPORT":       return "El sistema está importando los documentos.";
+      default:             return "El sistema está trabajando.";
+    }
+  }
+
+  function getProgressFooter(mode: ProgressMode | null, done: boolean) {
+    if (done) return "Finalizado";
+    switch (mode) {
+      case "SAVE_DRAFT":   return "Guardando en servidor";
+      case "DELETE_DRAFT": return "Eliminando en servidor";
+      case "REGISTER":     return "Procesando en servidor";
+      case "IMPORT":       return "Procesando lotes";
+      default:             return "Procesando";
+    }
   }
 
   // ─── Render ───────────────────────────────────────────────────────────────────
 
   return (
     <div className="p-6">
+      {/* ── Barra de progreso flotante (igual que docs-tributarios) ────────────── */}
+      {progressVisible && (
+        <div className="fixed right-5 top-5 z-[120] w-[min(380px,calc(100vw-2rem))]">
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_18px_50px_rgba(15,23,42,0.18)]">
+            <div className="px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-bold text-slate-900">
+                    {getProgressTitle(progressMode, progressDone)}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    {getProgressDescription(progressMode, progressDone)}
+                  </div>
+                </div>
+                <div className="shrink-0 text-sm font-extrabold text-slate-700">
+                  {Math.min(100, Math.max(0, Math.round(progress)))}%
+                </div>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className={cls(
+                    "h-full rounded-full transition-all duration-300",
+                    progressDone ? "bg-emerald-500" : "bg-slate-900"
+                  )}
+                  style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
+                />
+              </div>
+              <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
+                <span>{getProgressFooter(progressMode, progressDone)}</span>
+                <span>
+                  {saving || bulkRegistering || bulkDeleting || importing
+                    ? "En curso..."
+                    : progressDone
+                      ? "Listo"
+                      : ""}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div className={tradeDocsTheme.shell}>
         {/* Header */}
         <div className={cls(tradeDocsTheme.header, "px-7 py-7")}>
@@ -1456,6 +1959,22 @@ export default function Page() {
                 <button
                   type="button"
                   className={tradeDocsTheme.btnGlass}
+                  onClick={openImport}
+                >
+                  ⬆️ Cargar Excel
+                </button>
+              )}
+              <button
+                type="button"
+                className={tradeDocsTheme.btnGlass}
+                onClick={downloadImportTemplate}
+              >
+                ⬇️ Descargar formato
+              </button>
+              {canEdit && (
+                <button
+                  type="button"
+                  className={tradeDocsTheme.btnGlass}
                   onClick={openNewEditor}
                 >
                   + Nuevo documento
@@ -1467,16 +1986,27 @@ export default function Page() {
 
         {/* Messages */}
         {pageMsg && (
-          <div className="border-t bg-white px-7 py-3">
+          <div className="border-t bg-white px-7 py-4">
             <div
               className={cls(
-                "rounded-xl border px-3 py-2 text-sm",
+                "rounded-xl border px-3 py-3 text-sm",
                 pageMsg.level === "error"
                   ? "border-rose-200 bg-rose-50 text-rose-900"
                   : "border-amber-200 bg-amber-50 text-amber-900"
               )}
             >
-              {pageMsg.text}
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>{pageMsg.text}</div>
+                {importActionReport?.rows?.length ? (
+                  <button
+                    type="button"
+                    className="inline-flex items-center rounded-xl bg-white/80 border border-current/20 px-3 py-1.5 text-xs font-semibold shadow-sm hover:bg-white transition whitespace-nowrap"
+                    onClick={exportImportReport}
+                  >
+                    Exportar reporte
+                  </button>
+                ) : null}
+              </div>
             </div>
           </div>
         )}
@@ -1487,31 +2017,38 @@ export default function Page() {
             {/* Tab bar */}
             <div className="border-b px-4 py-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("drafts")}
-                    className={cls(
-                      "rounded-xl px-3 py-2 text-sm font-bold transition",
-                      activeTab === "drafts"
-                        ? "bg-[#123b63] text-white shadow"
-                        : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                    )}
-                  >
-                    Borradores
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("registered")}
-                    className={cls(
-                      "rounded-xl px-3 py-2 text-sm font-bold transition",
-                      activeTab === "registered"
-                        ? "bg-[#123b63] text-white shadow"
-                        : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                    )}
-                  >
-                    Registrados
-                  </button>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("drafts")}
+                      className={cls(
+                        "rounded-xl px-3 py-2 text-sm font-bold transition",
+                        activeTab === "drafts"
+                          ? "bg-[#123b63] text-white shadow"
+                          : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                      )}
+                    >
+                      Borradores
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("registered")}
+                      className={cls(
+                        "rounded-xl px-3 py-2 text-sm font-bold transition",
+                        activeTab === "registered"
+                          ? "bg-[#123b63] text-white shadow"
+                          : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                      )}
+                    >
+                      Registrados
+                    </button>
+                  </div>
+                  <div className="mt-2 text-[11px] text-slate-500">
+                    {activeTab === "drafts"
+                      ? "Documentos en borrador pendientes de registrar."
+                      : "Documentos ya registrados o cancelados."}
+                  </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
@@ -1677,6 +2214,7 @@ export default function Page() {
         onClose={() => setEditorOpen(false)}
         onSaveDraft={handleSaveDraft}
         onRegister={handleRegister}
+        onCancelDoc={editorReadOnly && editorHeader.status === "VIGENTE" ? openCancelFromEditor : undefined}
         saving={saving}
         canEdit={canEdit}
         isNew={editorDocId === null}
@@ -1697,6 +2235,7 @@ export default function Page() {
         businessLines={businessLines}
         accByCode={accByCode}
         counterpartyMap={counterpartyMap}
+        onCreateCounterparty={openCreateCounterparty}
         originSearchResults={originSearchResults}
         originSearchLoading={originSearchLoading}
         originSearchLoadingMore={originSearchLoadingMore}
@@ -1750,6 +2289,29 @@ export default function Page() {
         branches={branches}
         businessLines={businessLines}
         docInfo={cancelDocInfo}
+      />
+
+      {/* Import Modal */}
+      <OtherDocsImportModal
+        open={importOpen}
+        canEdit={canEdit}
+        importing={importing}
+        importErrors={importErrors}
+        importValidationRows={importValidationRows}
+        importPreview={importPreview}
+        onClose={closeImport}
+        onConfirm={() => void confirmOtherDocImport()}
+        onPickExcel={(f) => void onPickOtherDocExcel(f)}
+        onExportValidationReport={importActionReport ? exportImportReport : undefined}
+      />
+
+      {/* Counterparty Create Modal */}
+      <CounterpartyCreateModal
+        open={cpModal.open}
+        companyId={companyId}
+        initialIdentifier={cpModal.identifier}
+        onClose={() => setCpModal({ open: false, identifier: "" })}
+        onCreated={onCounterpartyCreated}
       />
 
       {/* Filters Modal */}

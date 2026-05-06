@@ -36,6 +36,7 @@ type Props = {
   onClose: () => void;
   onSaveDraft: () => Promise<void>;
   onRegister: () => Promise<void>;
+  onCancelDoc?: () => void;
   saving: boolean;
   canEdit: boolean;
   isNew: boolean;
@@ -115,7 +116,7 @@ function isLevel4Account(code: string): boolean {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function OtherDocEditorModal({
-  open, onClose, onSaveDraft, onRegister, saving, canEdit, isNew, readOnly,
+  open, onClose, onSaveDraft, onRegister, onCancelDoc, saving, canEdit, isNew, readOnly,
   header, setHeader, journalLines, setJournalLines,
   payments, onAddPayment, onRemovePayment, onUpdatePayment,
   activeTab, setActiveTab,
@@ -1416,6 +1417,19 @@ export default function OtherDocEditorModal({
                 >
                   Cerrar
                 </button>
+
+                {isViewMode && canEdit && header.status === "VIGENTE" && onCancelDoc && (
+                  <button
+                    type="button"
+                    className={cls(
+                      "inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm font-semibold shadow-sm transition",
+                      "border border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
+                    )}
+                    onClick={onCancelDoc}
+                  >
+                    Cancelar documento
+                  </button>
+                )}
 
                 {!isViewMode && canEdit && (
                   <>

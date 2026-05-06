@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Pencil, Eye, CheckCircle2, Trash2, Ban,
   ChevronUp, ChevronDown, ChevronsUpDown,
@@ -105,12 +105,26 @@ export default function OtherDocsTable({
   selectedMap, allSelected, onToggleSelectAll, onToggleRow,
   onOpenRow, onDeleteRow, onRegisterRow, onCancelRow, onExpandRow,
   renderExpandedContent,
-  useInternalScroll = false, onReachEnd, loadingMore = false, hasMore = false,
+  useInternalScroll: _useInternalScroll = false, onReachEnd, loadingMore = false, hasMore = false,
 }: Props) {
-  const scrollWrapRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("issue_date");
   const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // Infinite scroll — IntersectionObserver sobre el sentinel al fondo de la tabla
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel || !hasMore || loadingMore) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) onReachEnd?.();
+      },
+      { rootMargin: "200px" }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, loadingMore, onReachEnd]);
 
   function handleSort(next: SortKey) {
     if (sortKey === next) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -147,25 +161,12 @@ export default function OtherDocsTable({
     return data;
   }, [rows, sortKey, sortDir]);
 
-  function handleScrollWrap() {
-    if (!useInternalScroll || !hasMore || loadingMore) return;
-    const el = scrollWrapRef.current;
-    if (!el) return;
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 120) onReachEnd?.();
-  }
-
   // Colgroup total = 100%
   // checkbox 4 | fecha 8 | tipo 11 | número 10 | rut/nic 9 | nombre 22 | monto 10 | saldo 10 | estado 8 | acciones 8
 
   return (
     <div className="mt-0 rounded-2xl bg-white shadow-[0_8px_30px_rgba(20,12,70,0.12)] ring-1 ring-slate-200/60">
-      <div
-        ref={scrollWrapRef}
-        onScroll={handleScrollWrap}
-        className={cls("w-full overflow-x-hidden rounded-2xl",
-          useInternalScroll ? "max-h-[calc(100vh-320px)] overflow-y-auto" : "overflow-y-visible"
-        )}
-      >
+      <div className="w-full overflow-x-hidden rounded-2xl overflow-y-visible">
         <table className="w-full table-fixed">
           <colgroup>
             <col style={{ width: "4%" }} />
@@ -320,11 +321,13 @@ export default function OtherDocsTable({
             )}
           </tbody>
         </table>
-        {loadingMore ? (
+        {loadingMore && (
           <div className="border-t bg-white px-3 py-3 text-center text-[12px] text-slate-500">
             Cargando más documentos...
           </div>
-        ) : null}
+        )}
+        {/* Sentinel para IntersectionObserver */}
+        <div ref={sentinelRef} className="h-1" aria-hidden="true" />
       </div>
     </div>
   );

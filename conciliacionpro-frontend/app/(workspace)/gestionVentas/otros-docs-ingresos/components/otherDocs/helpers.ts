@@ -34,6 +34,30 @@ export const EMPTY_OTHER_DOC_FILTERS: OtherDocListFilters = {
   amount_filter: { op: "", value1: "", value2: "" },
 };
 
+function expandNumberToken(token: string): string[] {
+  const raw = String(token || "").trim();
+  if (!raw) return [];
+  if (raw.includes("-")) {
+    const [aRaw, bRaw] = raw.split("-").map((x) => x.trim());
+    const a = Number(aRaw);
+    const b = Number(bRaw);
+    if (Number.isFinite(a) && Number.isFinite(b) && a <= b) {
+      const out: string[] = [];
+      for (let i = a; i <= b; i++) out.push(String(i));
+      return out;
+    }
+  }
+  return [raw];
+}
+
+function parseNumberFilterTokens(value: string): string[] {
+  return String(value || "")
+    .split(",")
+    .flatMap((part) => expandNumberToken(part))
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
 function matchNumeric(val: number, filter: NumericFilterValue): boolean {
   if (!filter.op || !filter.value1) return true;
   const v1 = Number(filter.value1);
@@ -63,8 +87,11 @@ export function applyOtherDocFilters(
     out = out.filter((r) => (r.issue_date || "") <= filters.issue_date_to);
   if (filters.doc_type)
     out = out.filter((r) => r.doc_type === filters.doc_type);
-  if (filters.number)
-    out = out.filter((r) => lc(r.number).includes(lc(filters.number)));
+  if (filters.number) {
+    const wantedNumbers = parseNumberFilterTokens(filters.number);
+    if (wantedNumbers.length > 0)
+      out = out.filter((r) => wantedNumbers.some((token) => String(r.number || "").trim() === token));
+  }
   if (filters.counterparty_identifier)
     out = out.filter((r) =>
       lc(r.counterparty_identifier_snapshot).includes(lc(filters.counterparty_identifier))

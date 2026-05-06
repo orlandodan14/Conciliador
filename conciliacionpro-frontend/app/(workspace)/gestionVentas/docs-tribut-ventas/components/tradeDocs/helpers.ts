@@ -430,7 +430,7 @@ export function applyTradeDocFilters(
       const wantedNumbers = parseNumberFilterTokens(filters.number);
 
       if (wantedNumbers.length > 0) {
-        const matchesAny = wantedNumbers.some((token) => number.includes(token));
+        const matchesAny = wantedNumbers.some((token) => number === token);
         if (!matchesAny) return false;
       }
     }

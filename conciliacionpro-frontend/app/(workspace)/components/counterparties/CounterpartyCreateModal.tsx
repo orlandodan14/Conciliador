@@ -16,6 +16,35 @@ function normalizeIdentifier(raw: string) {
     .replace(/[^0-9A-Z]+/g, "");
 }
 
+// Sufijos legales: forma que deja el title-case → forma canónica
+const LEGAL_SUFFIX_MAP: [RegExp, string][] = [
+  [/\bSpa\b/g,        "SpA"],
+  [/\bS\.a\./g,       "S.A."],
+  [/\bLtda\b/g,       "Ltda."],
+  [/\bEirl\b/g,       "E.I.R.L."],
+  [/\bE\.i\.r\.l\./g, "E.I.R.L."],
+  [/\bSrl\b/g,        "S.R.L."],
+  [/\bS\.r\.l\./g,    "S.R.L."],
+  [/\bC\.a\./g,       "C.A."],
+  [/\bSas\b/g,        "S.A.S."],
+  [/\bS\.a\.s\./g,    "S.A.S."],
+  [/\bSac\b/g,        "S.A.C."],
+  [/\bS\.a\.c\./g,    "S.A.C."],
+];
+
+function normalizeCounterpartyName(raw: string): string {
+  if (!raw?.trim()) return raw;
+  // Title case: primera letra de cada palabra en mayúscula, resto en minúscula
+  let result = raw.trim().replace(/\S+/g, (word) =>
+    word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+  );
+  // Corregir sufijos legales a su forma canónica
+  for (const [pattern, replacement] of LEGAL_SUFFIX_MAP) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+
 type CounterpartyType = "CLIENTE" | "PROVEEDOR" | "OTRO";
 
 export type Counterparty = {
@@ -169,7 +198,7 @@ export function CounterpartyCreateModal({
       const payload: any = {
         company_id: companyId,
         identifier: form.identifier.trim(),
-        name: form.name.trim(),
+        name: normalizeCounterpartyName(form.name),
         type: form.type,
         is_active: !!form.is_active,
         extra: extraObj,
@@ -240,6 +269,7 @@ export function CounterpartyCreateModal({
               className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
               value={form.name}
               onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+              onBlur={(e) => setForm((p) => ({ ...p, name: normalizeCounterpartyName(e.target.value) }))}
               placeholder="Ej: Comercial ABC SpA"
             />
           </div>

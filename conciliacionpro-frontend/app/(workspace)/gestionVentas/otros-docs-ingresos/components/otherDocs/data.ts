@@ -466,17 +466,11 @@ export async function deleteOtherDoc(
       .delete()
       .eq("company_id", companyId)
       .eq("journal_entry_id", doc.journal_entry_id);
-
-    // 4c. Borrar el asiento (solo si es DRAFT)
-    await supabase
-      .from("journal_entries")
-      .delete()
-      .eq("company_id", companyId)
-      .eq("id", doc.journal_entry_id)
-      .eq("status", "DRAFT");
   }
 
-  // 5. Borrar el doc (solo BORRADOR)
+  // 5. Borrar el doc ANTES que el asiento:
+  //    trade_docs tiene FK → journal_entries, así que primero eliminamos
+  //    trade_docs (libera la FK) y después journal_entries.
   const { error } = await supabase
     .from(TABLE)
     .delete()
@@ -484,6 +478,16 @@ export async function deleteOtherDoc(
     .eq("id", docId)
     .eq("status", "BORRADOR");
   if (error) throw error;
+
+  // 6. Ahora sí podemos borrar el asiento (ya no hay FK apuntando a él)
+  if (doc?.journal_entry_id) {
+    await supabase
+      .from("journal_entries")
+      .delete()
+      .eq("company_id", companyId)
+      .eq("id", doc.journal_entry_id)
+      .eq("status", "DRAFT");
+  }
 }
 
 // ─── Cancelar documento ────────────────────────────────────────────────────────

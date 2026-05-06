@@ -245,6 +245,7 @@ export type TradeDocTimelineRow = {
   running_group: string;
   source_doc_id: string | null;
   sort_ts: string | null;
+  item_status: string | null;   // estado del item (doc: VIGENTE/CANCELADO…, pago: APPLIED)
 };
 
 export type TradeDocListFilters = {
