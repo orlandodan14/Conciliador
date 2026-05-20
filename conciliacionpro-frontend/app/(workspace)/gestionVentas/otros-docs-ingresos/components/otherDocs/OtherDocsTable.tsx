@@ -80,21 +80,7 @@ function TableTd({ children, right, center, title, className }: {
   );
 }
 
-function ExpandedRow({ content }: { content?: React.ReactNode }) {
-  return (
-    <div className="w-full bg-slate-50/70 px-3 py-3">
-      <div className="overflow-hidden rounded-xl bg-white/95 shadow-sm ring-1 ring-slate-200/70">
-        <div className="px-3 py-3">
-          {content || (
-            <div className="text-[12px] text-slate-500">
-              Sin detalle adicional disponible.
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
+
 
 const iconBtn = "inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50";
 const iconBtnPrimary = "inline-flex h-9 w-9 items-center justify-center rounded-lg bg-slate-900 text-white hover:bg-slate-800";
@@ -214,7 +200,8 @@ export default function OtherDocsTable({
               sortedRows.map((row, idx) => {
                 const checked = Boolean(selectedMap[row.id]);
                 const expanded = expandedId === row.id;
-                const isReturn = row.doc_type === "DEVOLUCION";
+                const isReturn  = row.doc_type === "DEVOLUCION";
+                const isAdvance = row.doc_type === "CUSTOMER_ADVANCE";
                 const amountVal = Number(row.grand_total || 0);
                 const balanceVal = Number(row.balance ?? row.grand_total ?? 0);
                 return (
@@ -236,7 +223,12 @@ export default function OtherDocsTable({
                       </TableTd>
                       <TableTd>{row.issue_date || "—"}</TableTd>
                       <TableTd>
-                        <span className={cls("font-semibold", isReturn ? "text-rose-700" : "text-emerald-700")}>
+                        <span className={cls(
+                          "font-semibold",
+                          isReturn  ? "text-rose-700"
+                          : isAdvance ? "text-indigo-700"
+                          : "text-emerald-700"
+                        )}>
                           {otherDocTypeShort(row.doc_type)}
                         </span>
                       </TableTd>
@@ -250,7 +242,12 @@ export default function OtherDocsTable({
                         <span className="block truncate">{row.counterparty_name_snapshot || "—"}</span>
                       </TableTd>
                       <TableTd right>
-                        <span className={cls("font-semibold", isReturn ? "text-rose-700" : "text-emerald-700")}>
+                        <span className={cls(
+                          "font-semibold",
+                          isReturn  ? "text-rose-700"
+                          : isAdvance ? "text-indigo-700"
+                          : "text-emerald-700"
+                        )}>
                           {isReturn ? "- " : ""}{formatNumber(Math.abs(amountVal), moneyDecimals)}
                         </span>
                       </TableTd>
@@ -261,9 +258,9 @@ export default function OtherDocsTable({
                             : isReturn
                               // DEV: saldo > 0 = devolución pendiente (rojo); < 0 = inusual
                               ? "text-rose-700"
-                              // OTI: saldo > 0 = cobro pendiente (verde); < 0 = inusual
+                              // OTI/ANT: saldo > 0 = pendiente (verde); < 0 = inusual
                               : balanceVal > 0
-                              ? "text-emerald-700"
+                              ? (isAdvance ? "text-indigo-700" : "text-emerald-700")
                               : "text-rose-700"
                         )}>
                           {formatNumber(Math.abs(balanceVal), moneyDecimals)}
@@ -311,7 +308,7 @@ export default function OtherDocsTable({
                     {expanded && (
                       <tr className="border-t bg-white">
                         <td colSpan={10} className="p-0">
-                          <ExpandedRow content={renderExpandedContent?.(row)} />
+                          {renderExpandedContent?.(row)}
                         </td>
                       </tr>
                     )}

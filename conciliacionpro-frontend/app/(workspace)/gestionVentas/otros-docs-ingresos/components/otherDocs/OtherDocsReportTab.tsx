@@ -78,8 +78,9 @@ const EMPTY_FILTERS: ReportFilters = {
    Helpers
 ───────────────────────────────────────────────────────────── */
 function docTypeLabel(t: string | null) {
-  if (t === "DEVOLUCION")   return "Devolución";
-  if (t === "OTRO_INGRESO") return "Otro Ingreso";
+  if (t === "DEVOLUCION")       return "Devolución";
+  if (t === "CUSTOMER_ADVANCE") return "Anticipo de cliente";
+  if (t === "OTRO_INGRESO")     return "Otro Ingreso";
   return t ?? "—";
 }
 function statusLabel(s: string | null) {
@@ -275,6 +276,7 @@ export default function OtherDocsReportTab({ companyId }: Props) {
                 onChange={e => setFilters(f => ({ ...f, doc_type: e.target.value }))}>
                 <option value="">Todos</option>
                 <option value="OTRO_INGRESO">Otro Ingreso</option>
+                <option value="CUSTOMER_ADVANCE">Anticipo de cliente</option>
                 <option value="DEVOLUCION">Devolución</option>
               </select>
             </div>

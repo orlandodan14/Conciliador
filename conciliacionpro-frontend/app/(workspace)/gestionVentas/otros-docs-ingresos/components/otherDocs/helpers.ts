@@ -10,17 +10,21 @@ export {
   normalizePeriodStatus,
   makeJournalLine,
   renumber,
+  getTradeDocPaymentState,
 } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/helpers";
 
 import type { OtherDocType, OtherDocListFilters, OtherDocRow, NumericFilterValue } from "./types";
+import { getTradeDocPaymentState } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/helpers";
 
 export function otherDocTypeLabel(t: OtherDocType | string): string {
-  if (t === "DEVOLUCION") return "Devolución";
+  if (t === "DEVOLUCION")       return "Devolución";
+  if (t === "CUSTOMER_ADVANCE") return "Anticipo de cliente";
   return "Otro Ingreso";
 }
 
 export function otherDocTypeShort(t: OtherDocType | string): string {
-  if (t === "DEVOLUCION") return "DEV";
+  if (t === "DEVOLUCION")       return "DEV";
+  if (t === "CUSTOMER_ADVANCE") return "ANT";
   return "OTI";
 }
 
@@ -31,7 +35,9 @@ export const EMPTY_OTHER_DOC_FILTERS: OtherDocListFilters = {
   number: "",
   counterparty_identifier: "",
   counterparty_name: "",
-  amount_filter: { op: "", value1: "", value2: "" },
+  payment_state: "",
+  amount_filter:  { op: "", value1: "", value2: "" },
+  balance_filter: { op: "", value1: "", value2: "" },
 };
 
 function expandNumberToken(token: string): string[] {
@@ -104,6 +110,19 @@ export function applyOtherDocFilters(
     out = out.filter((r) =>
       matchNumeric(Number(r.grand_total || 0), filters.amount_filter)
     );
+  if (filters.balance_filter.op && filters.balance_filter.value1)
+    out = out.filter((r) =>
+      matchNumeric(Number(r.balance ?? r.grand_total ?? 0), filters.balance_filter)
+    );
+  if (filters.payment_state) {
+    out = out.filter((r) => {
+      const state = getTradeDocPaymentState({
+        status:  r.status,
+        balance: Number(r.balance ?? r.grand_total ?? 0),
+      });
+      return state === filters.payment_state;
+    });
+  }
 
   return out;
 }

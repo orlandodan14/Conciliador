@@ -93,7 +93,9 @@ type Props = {
 
 const DOC_TYPES: { value: OtherDocType; label: string }[] = [
   { value: "OTRO_INGRESO", label: "OTRO INGRESO" },
-  { value: "DEVOLUCION",   label: "DEVOLUCIÓN" },
+  { value: "DEVOLUCION",   label: "DEVOLUCIÓN"   },
+  // CUSTOMER_ADVANCE se gestiona en el módulo de Cobros; se omite aquí para bloquear nueva creación.
+  // Los docs históricos con doc_type=CUSTOMER_ADVANCE siguen siendo legibles (ver banner de solo lectura).
 ];
 
 const EMPTY_ORIGIN_FILTERS: OriginSearchFilters = {
@@ -131,8 +133,9 @@ export default function OtherDocEditorModal({
 }: Props) {
 
   const isReturn   = header.doc_type === "DEVOLUCION";
-  const disabled   = readOnly || !canEdit;
-  const isViewMode = readOnly;
+  const isAdvance  = header.doc_type === "CUSTOMER_ADVANCE";
+  const disabled   = readOnly || !canEdit || isAdvance;   // historicos CUSTOMER_ADVANCE son siempre solo lectura
+  const isViewMode = readOnly || isAdvance;
 
   const [originSearchModalOpen, setOriginSearchModalOpen] = useState(false);
   const [originSearchFilters, setOriginSearchFilters] = useState<OriginSearchFilters>(EMPTY_ORIGIN_FILTERS);
@@ -444,6 +447,17 @@ export default function OtherDocEditorModal({
             {/* ═══════════════════ CABECERA ═══════════════════ */}
             {activeTab === "CABECERA" ? (
               <div className="space-y-4">
+
+                {/* Banner para docs históricos CUSTOMER_ADVANCE */}
+                {isAdvance && (
+                  <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
+                    <strong>Anticipo de cliente (documento histórico).</strong>{" "}
+                    Los anticipos de cliente ahora se gestionan desde el módulo de{" "}
+                    <strong>Cobros</strong>. Este documento es de solo lectura para preservar el historial.
+                    Para crear nuevos anticipos, usa <em>Cobros → Nuevo → Anticipo de cliente</em>.
+                  </div>
+                )}
+
                 <div className={tradeDocsTheme.card}>
 
                   {/* Card title */}
@@ -684,8 +698,8 @@ export default function OtherDocEditorModal({
                             <div className="text-sm font-semibold text-slate-900">
                               Documento origen (para devoluciones)
                             </div>
-                            <div className="text-[11px] text-slate-600">
-                              La nota solo puede afectar documentos del mismo RUT/ID de la cabecera.
+                            <div className="text-[11px] text-slate-600 mb-2">
+                              La devolución se origina de una factura o nota de crédito existente.
                             </div>
                           </div>
 
@@ -1379,7 +1393,9 @@ export default function OtherDocEditorModal({
                 <span
                   className={cls(
                     "inline-flex items-center rounded-full px-2 py-0.5 font-semibold",
-                    isReturn ? "bg-rose-100 text-rose-900" : "bg-emerald-100 text-emerald-900"
+                    isReturn  ? "bg-rose-100 text-rose-900"
+                  : isAdvance ? "bg-indigo-100 text-indigo-900"
+                  : "bg-emerald-100 text-emerald-900"
                   )}
                 >
                   Tipo: <b className="ml-1">{otherDocTypeLabel(header.doc_type)}</b>
@@ -1464,7 +1480,7 @@ export default function OtherDocEditorModal({
         </div>
       </div>
 
-      {/* ── Origin doc search modal (DEVOLUCION) ──────────────────────────── */}
+      {/* ── Origin doc search modal (DEVOLUCION — solo documentos fiscales) ──── */}
       <OriginDocSearchModal
         open={originSearchModalOpen}
         onClose={() => setOriginSearchModalOpen(false)}

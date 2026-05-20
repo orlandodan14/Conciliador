@@ -20,6 +20,9 @@ import type {
   OriginDocLite,
   OriginSearchFilters,
 } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/types";
+import { ExpandedTimelineTable, TimelineItem, itemStatusBadge } from "@/app/(workspace)/gestionVentas/components/ExpandedTimelineTable";
+import { RecordViewModal } from "@/app/(workspace)/gestionVentas/components/RecordViewModal";
+import FilterActionButtons from "@/app/(workspace)/components/FilterActionButtons";
 import {
   cls,
   todayISO,
@@ -51,7 +54,6 @@ import {
 import OtherDocsTable from "./components/otherDocs/OtherDocsTable";
 import OtherDocEditorModal from "./components/otherDocs/OtherDocEditorModal";
 import OtherDocsFiltersModal from "./components/otherDocs/OtherDocsFiltersModal";
-import OtherDocsReportTab from "./components/otherDocs/OtherDocsReportTab";
 import OtherDocsImportModal from "./components/otherDocs/OtherDocsImportModal";
 import TradeDocCancelModal from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocCancelModal";
 import { CounterpartyCreateModal, Counterparty as CPCounterparty } from "@/app/(workspace)/components/counterparties/CounterpartyCreateModal";
@@ -138,7 +140,7 @@ export default function Page() {
     [branches]
   );
 
-  const [activeTab, setActiveTab] = useState<"drafts" | "registered" | "reportes">("drafts");
+  const [activeTab, setActiveTab] = useState<"drafts" | "registered">("drafts");
 
   const [drafts, setDrafts] = useState<OtherDocRow[]>([]);
   const [loadingDrafts, setLoadingDrafts] = useState(false);
@@ -157,6 +159,14 @@ export default function Page() {
 
   const [filters, setFilters] = useState<OtherDocListFilters>(EMPTY_OTHER_DOC_FILTERS);
   const [filtersOpen, setFiltersOpen] = useState(false);
+
+  const hasActiveFilters =
+    !!(filters.issue_date_from || filters.issue_date_to ||
+       filters.doc_type || filters.number ||
+       filters.counterparty_identifier || filters.counterparty_name ||
+       filters.payment_state ||
+       (filters.amount_filter.op && filters.amount_filter.value1) ||
+       (filters.balance_filter.op && filters.balance_filter.value1));
 
   const [pageMsg, setPageMsg] = useState<{ level: "error" | "warn"; text: string } | null>(null);
   // Mensaje dentro del modal editor (errores / éxito en guardar)
@@ -202,6 +212,8 @@ export default function Page() {
     event_date: string | null;
     event_type: "DOC" | "PAYMENT";
     doc_type: string | null;
+    /** doc_class del documento (para saber si es FISCAL o NON_FISCAL) */
+    doc_class?: string | null;
     non_fiscal_doc_code: string | null;
     number: string | null;
     label: string;
@@ -209,13 +221,22 @@ export default function Page() {
     impact_sign: number;
     affects_label: string;
     item_status: string | null;   // estado del ítem (doc: VIGENTE/CANCELADO…, pago: APPLIED)
+    /** ID del trade_doc (para eventos DOC) */
+    id?: string | null;
+    /** ID del payment (para eventos PAYMENT) */
+    payment_id?: string | null;
     /** Marca el evento como el documento de origen de esta devolución */
     is_origin_context?: boolean;
   };
   const [relatedByDocId, setRelatedByDocId] = useState<Record<string, RelatedDocEvent[]>>({});
   const [relatedLoadingByDocId, setRelatedLoadingByDocId] = useState<Record<string, boolean>>({});
 
-  // Origin search
+  // ── Modal de vista cruzada (FISCAL / PAYMENT desde esta página) ──────────
+  const [crossViewOpen, setCrossViewOpen] = useState(false);
+  const [crossViewId, setCrossViewId] = useState<string | null>(null);
+  const [crossViewType, setCrossViewType] = useState<"FISCAL" | "NON_FISCAL" | "PAYMENT" | null>(null);
+
+  // Origin search (documentos FISCALES)
   const [originSearchResults, setOriginSearchResults] = useState<OriginDocLite[]>([]);
   const [originSearchLoading, setOriginSearchLoading] = useState(false);
   const [originSearchLoadingMore, setOriginSearchLoadingMore] = useState(false);
@@ -304,7 +325,7 @@ export default function Page() {
     const docTotal = Number(grandTotalStr) || 0;
     if (docTotal <= 0) return makeEmptyJournalLines();
 
-    const isReturn = docType === "DEVOLUCION";
+    const isReturn  = docType === "DEVOLUCION";
     const usedPays = payments.filter((p) => Number(p.amount || 0) > 0);
 
     // Glosa unificada para todas las líneas
@@ -338,7 +359,7 @@ export default function Page() {
     let lineNo = 1;
 
     if (!isReturn) {
-      // OTRO_INGRESO: formas de pago y saldo → DEBE; ingreso total → HABER (libre)
+      // ── OTRO_INGRESO: formas de pago → DEBE; ingreso total → HABER (libre) ──
       for (const p of usedPays) {
         const amt     = Number(p.amount || 0);
         const accCode = String(defAccByProcess[getPaymentProcessKey(p)] || "").trim();
@@ -354,11 +375,13 @@ export default function Page() {
 
       // Cuenta del ingreso → libre para el usuario
       newLines.push({ line_no: lineNo++, account_code: "", description: glosa, debit: "0", credit: String(docTotal), ...empty });
+
     } else {
-      // DEVOLUCION:
-      // DEBE: siempre SALE_PAYMENT_CREDIT (Clientes por cobrar) — anula la rebaja que hizo la NC
-      const cxcCode = String(defAccByProcess["SALE_PAYMENT_CREDIT"] || "").trim();
-      newLines.push({ line_no: lineNo++, account_code: cxcCode, description: glosa, debit: String(docTotal), credit: "0", ...empty, branch_code: branchForCode(cxcCode) });
+      // ── DEVOLUCION ────────────────────────────────────────────────────────────
+      // DEBE: CxC (revertir la cuenta por cobrar del documento fiscal origen)
+      const debeCode = String(defAccByProcess["SALE_PAYMENT_CREDIT"] || "").trim();
+
+      newLines.push({ line_no: lineNo++, account_code: debeCode, description: glosa, debit: String(docTotal), credit: "0", ...empty, branch_code: branchForCode(debeCode) });
 
       // HABER: formas de pago con cuenta predeterminada; si no hay pagos, cuenta vacía
       if (usedPays.length > 0) {
@@ -367,14 +390,12 @@ export default function Page() {
           const accCode = String(defAccByProcess[getPaymentProcessKey(p)] || "").trim();
           newLines.push({ line_no: lineNo++, account_code: accCode, description: glosa, debit: "0", credit: String(amt), ...empty, branch_code: branchForCode(accCode) });
         }
-        // Saldo restante sin cuenta (libre para el usuario)
         const paidTotal = usedPays.reduce((s, p) => s + Number(p.amount || 0), 0);
         const remaining = docTotal - paidTotal;
         if (remaining > 0.5) {
           newLines.push({ line_no: lineNo++, account_code: "", description: glosa, debit: "0", credit: String(remaining), ...empty });
         }
       } else {
-        // Sin forma de pago → HABER libre
         newLines.push({ line_no: lineNo++, account_code: "", description: glosa, debit: "0", credit: String(docTotal), ...empty });
       }
     }
@@ -851,6 +872,7 @@ export default function Page() {
       const jeId = await saveJournalEntry({
         companyId,
         docId: savedDocId,
+        counterpartyId: editorHeader.counterparty_id ?? null,
         entryDate: editorHeader.issue_date,
         description: buildJournalDescription(editorHeader),
         currencyCode: editorHeader.currency_code || baseCurrency,
@@ -1120,7 +1142,13 @@ export default function Page() {
 
   function onCounterpartyCreated(created: CPCounterparty) {
     const key = normalizeIdentifier(created.identifier);
-    setCounterpartyMap((m) => ({ ...m, [key]: created }));
+    const lite: CounterpartyLite = {
+      id: created.id,
+      identifier: created.identifier,
+      identifier_normalized: created.identifier_normalized ?? key,
+      name: created.name,
+    };
+    setCounterpartyMap((m) => ({ ...m, [key]: lite }));
   }
 
   function openCancelFromEditor() {
@@ -1397,6 +1425,37 @@ export default function Page() {
     (window as any).__otherDocImportParsed = null;
   }
 
+  // ─── Cambio de tab (limpia filtros y selección) ───────────────────────────
+
+  function switchTab(tab: "drafts" | "registered") {
+    setActiveTab(tab);
+    setFilters(EMPTY_OTHER_DOC_FILTERS);
+    setSelectedDrafts({});
+    setSelectedRegistered({});
+  }
+
+  // ─── Descargar reporte Excel del tab activo ────────────────────────────────
+
+  function downloadReport() {
+    const rows = activeTab === "drafts" ? filteredDrafts : filteredRegistered;
+    const tabLabel = activeTab === "drafts" ? "borradores" : "registrados";
+    const data = rows.map((r) => ({
+      "Fecha emisión":    r.issue_date ?? "",
+      "Tipo":             r.doc_type === "DEVOLUCION" ? "Devolución" : r.doc_type === "CUSTOMER_ADVANCE" ? "Anticipo de cliente" : "Otro Ingreso",
+      "Número":           r.number ?? "",
+      "RUT / ID":         r.counterparty_identifier_snapshot ?? "",
+      "Nombre contraparte": r.counterparty_name_snapshot ?? "",
+      "Total":            Number(r.grand_total ?? 0),
+      "Saldo":            Number(r.balance ?? 0),
+      "Estado":           r.status ?? "",
+      "Fecha registro":   r.created_at ? String(r.created_at).slice(0, 10) : "",
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Documentos");
+    XLSX.writeFile(wb, `otros_docs_${tabLabel}_${todayISO()}.xlsx`);
+  }
+
   function exportImportReport() {
     if (!importActionReport) return;
     const rows = importActionReport.rows.map((r: any) => ({
@@ -1449,7 +1508,9 @@ export default function Page() {
 
       const normalizeDocType = (v: any): string => {
         const x = String(v ?? "").trim().toUpperCase();
-        if (["DEV", "DEVOLUCION", "DEVOLUCIÓN"].includes(x)) return "DEVOLUCION";
+        if (["DEV", "DEVOLUCION", "DEVOLUCIÓN", "INCOME_RETURN"].includes(x)) return "DEVOLUCION";
+        // CUSTOMER_ADVANCE / ANT / ANTICIPO ya no se crean desde este módulo (→ Cobros).
+        // Si alguien sube un excel con ese tipo, se normaliza como OTRO_INGRESO.
         return "OTRO_INGRESO";
       };
 
@@ -1630,6 +1691,7 @@ export default function Page() {
             event_date: (originDoc as any).issue_date,
             event_type: "DOC",
             doc_type: (originDoc as any).doc_type,
+            doc_class: (originDoc as any).doc_class,
             non_fiscal_doc_code: (originDoc as any).non_fiscal_doc_code,
             number: num,
             label,
@@ -1637,6 +1699,7 @@ export default function Page() {
             impact_sign: -1,
             affects_label: "Documento origen",
             item_status: (originDoc as any).status || null,
+            id: (originDoc as any).id,
             is_origin_context: true,
           });
         }
@@ -1661,6 +1724,7 @@ export default function Page() {
           impact_sign: -1,
           affects_label: row.doc_type === "DEVOLUCION" ? "Pago aplicado al documento" : "Cobro aplicado al documento",
           item_status: "APPLIED",
+          payment_id: a.payment_id,
         });
       });
 
@@ -1677,34 +1741,57 @@ export default function Page() {
 
   function renderDocExpandedContent(row: OtherDocRow) {
     const loading = relatedLoadingByDocId[row.id];
-    const items   = relatedByDocId[row.id];
+    const evts    = relatedByDocId[row.id];
 
-    if (loading) {
-      return <div className="text-[12px] text-slate-500">Cargando información relacionada...</div>;
-    }
-    if (!items) {
-      return <div className="text-[12px] text-slate-400">Sin información relacionada cargada.</div>;
-    }
-
-    const originItem   = items.find((i) => i.is_origin_context);
-    const paymentItems = items.filter((i) => !i.is_origin_context && i.event_type === "PAYMENT");
+    const originItem   = evts?.find((i) => i.is_origin_context);
+    const paymentItems = evts?.filter((i) => !i.is_origin_context && i.event_type === "PAYMENT") ?? [];
 
     const balance  = Number(row.balance ?? row.grand_total ?? 0);
     const isReturn = row.doc_type === "DEVOLUCION";
     const status   = String(row.status || "").toUpperCase();
 
-    // ── Estado por fila (columna Estado) ────────────────────────────────────
-    function itemStatusBadge(eventType: string, itemStatus: string | null | undefined) {
-      if (eventType === "PAYMENT") return { text: "Aplicado",  cls: "bg-emerald-100 text-emerald-800" };
-      const s = String(itemStatus || "").toUpperCase();
-      if (s === "VIGENTE")   return { text: "Vigente",   cls: "bg-emerald-100 text-emerald-800" };
-      if (s === "CANCELADO") return { text: "Cancelado", cls: "bg-slate-100 text-slate-700" };
-      if (s === "BORRADOR")  return { text: "Borrador",  cls: "bg-amber-100 text-amber-800" };
-      return                        { text: s || "—",    cls: "bg-slate-100 text-slate-600" };
+    function originTypeLabel(docType: string | null) {
+      if (docType === "CREDIT_NOTE")  return "Nota de crédito";
+      if (docType === "DEBIT_NOTE")   return "Nota de débito";
+      if (docType === "INVOICE")      return "Factura";
+      if (docType === "DEVOLUCION")       return "Devolución";
+      if (docType === "CUSTOMER_ADVANCE") return "Anticipo de cliente";
+      if (docType === "OTRO_INGRESO")     return "Otro ingreso";
+      return "Documento";
     }
 
-    // ── Sugerencia de acción (debajo de la tabla) ────────────────────────────
-    const actionSuggestion = (() => {
+    const tableEvts = [...(originItem ? [originItem] : []), ...paymentItems];
+    const items: TimelineItem[] = tableEvts.map((item, idx): TimelineItem => {
+      const isOrigin     = !!item.is_origin_context;
+      const typeLabel    = isOrigin ? originTypeLabel(item.doc_type) : isReturn ? "Pago" : "Cobro";
+      const docLabel     = isOrigin
+        ? (item.label || item.number || "Doc. origen")
+        : (item.number || item.label || (isReturn ? "Pago aplicado" : "Cobro aplicado"));
+      const affectsLabel = isOrigin ? "Documento origen de la devolución" : "Reduce saldo pendiente";
+      const fiscalTypes = ["INVOICE", "CREDIT_NOTE", "DEBIT_NOTE"];
+      const recordId   = isOrigin ? (item.id ?? null) : (item.payment_id ?? null);
+      const recordType: "FISCAL" | "NON_FISCAL" | "PAYMENT" = isOrigin
+        ? (item.doc_class === "FISCAL" || fiscalTypes.includes(item.doc_type || "")
+            ? "FISCAL"
+            : "NON_FISCAL")
+        : "PAYMENT";
+      return {
+        key: String(idx),
+        date: item.event_date,
+        typeLabel,
+        docLabel,
+        amount: item.amount,
+        isNegative: !isOrigin,
+        amountNeutral: isOrigin,
+        affectsLabel,
+        badge: itemStatusBadge(item.event_type, item.item_status),
+        rowBg: isOrigin ? "bg-sky-50/70" : undefined,
+        recordId,
+        recordType,
+      };
+    });
+
+    const suggestion = (() => {
       if (status === "CANCELADO") return null;
       if (status === "BORRADOR")  return { text: "Registra el documento para continuar", cls: "bg-amber-100 text-amber-900" };
       if (balance <= 0) return null;
@@ -1712,116 +1799,20 @@ export default function Page() {
       return               { text: "Requiere gestionar cobro",             cls: "bg-amber-100 text-amber-900" };
     })();
 
-    function originTypeLabel(docType: string | null) {
-      if (docType === "CREDIT_NOTE")  return "Nota de crédito";
-      if (docType === "DEBIT_NOTE")   return "Nota de débito";
-      if (docType === "INVOICE")      return "Factura";
-      if (docType === "DEVOLUCION")   return "Devolución";
-      if (docType === "OTRO_INGRESO") return "Otro ingreso";
-      return "Documento";
-    }
-
-    // Unificamos origen + pagos en una sola lista de filas (igual que tributarios)
-    const tableItems = [
-      ...(originItem ? [originItem] : []),
-      ...paymentItems,
-    ];
-
     return (
-      <div className="flex flex-col gap-2">
-
-        {/* ── Tabla unificada (mismo formato que docs tributarios) ──────────── */}
-        {tableItems.length > 0 && (
-        <div className="overflow-hidden rounded-2xl ring-1 ring-slate-200/70">
-          <div className="grid grid-cols-[100px_140px_140px_180px_1fr_200px] bg-gradient-to-b from-slate-100 to-slate-50 text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#0b2b4f]">
-            <div className="px-3 py-2 border-r border-slate-200">Fecha</div>
-            <div className="px-3 py-2 border-r border-slate-200">Tipo</div>
-            <div className="px-3 py-2 border-r border-slate-200">Documento</div>
-            <div className="px-3 py-2 border-r border-slate-200 text-right">Monto</div>
-            <div className="px-3 py-2 border-r border-slate-200">Cómo afecta</div>
-            <div className="px-3 py-2">Estado</div>
-          </div>
-
-          {tableItems.map((item, idx) => {
-              const isOrigin = !!item.is_origin_context;
-
-              const typeLabel    = isOrigin ? originTypeLabel(item.doc_type) : isReturn ? "Pago" : "Cobro";
-              const docLabel     = isOrigin
-                ? (item.label || item.number || "Doc. origen")
-                : (item.number || item.label || (isReturn ? "Pago aplicado" : "Cobro aplicado"));
-              const affectsLabel = isOrigin ? "Documento origen de la devolución" : "Reduce saldo pendiente";
-
-              // Monto: origen = positivo (monto original), pago = negativo (reduce saldo)
-              const amountNode = isOrigin
-                ? <span className="font-extrabold text-slate-800 whitespace-nowrap">
-                    {formatNumber(item.amount, moneyDecimals)}
-                  </span>
-                : <span className="font-extrabold text-emerald-700 whitespace-nowrap">
-                    − {formatNumber(item.amount, moneyDecimals)}
-                  </span>;
-
-              // Fila origen con fondo celeste (igual que NC/ND en tributarios)
-              const rowBg = isOrigin
-                ? "bg-sky-50/70"
-                : idx % 2 === 0 ? "bg-white" : "bg-slate-50/70";
-
-              return (
-                <div
-                  key={idx}
-                  className={cls(
-                    "grid grid-cols-[100px_140px_140px_180px_1fr_200px] text-[12px]",
-                    rowBg
-                  )}
-                >
-                  <div className="px-3 py-2 border-t border-r border-slate-200/70 whitespace-nowrap">
-                    {item.event_date || "—"}
-                  </div>
-                  <div className="px-3 py-2 border-t border-r border-slate-200/70 whitespace-nowrap">
-                    <span className="font-semibold text-slate-800">{typeLabel}</span>
-                  </div>
-                  <div
-                    className="px-3 py-2 border-t border-r border-slate-200/70 truncate whitespace-nowrap font-medium text-slate-900"
-                    title={docLabel}
-                  >
-                    {docLabel}
-                  </div>
-                  <div className="px-3 py-2 border-t border-r border-slate-200/70 text-right">
-                    {amountNode}
-                  </div>
-                  <div className="px-3 py-2 border-t border-r border-slate-200/70 truncate whitespace-nowrap text-slate-700">
-                    {affectsLabel}
-                  </div>
-                  <div className="px-3 py-2 border-t border-slate-200/70">
-                    {(() => {
-                      const badge = itemStatusBadge(item.event_type, item.item_status);
-                      return (
-                        <span className={cls(
-                          "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold whitespace-nowrap",
-                          badge.cls
-                        )}>
-                          {badge.text}
-                        </span>
-                      );
-                    })()}
-                  </div>
-                </div>
-              );
-            })}
-        </div>
-        )}
-
-        {/* ── Sugerencia de acción (debajo de la tabla) ────────────────────── */}
-        {actionSuggestion && (
-          <div className="flex justify-end">
-            <span className={cls(
-              "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold",
-              actionSuggestion.cls
-            )}>
-              {actionSuggestion.text}
-            </span>
-          </div>
-        )}
-      </div>
+      <ExpandedTimelineTable
+        items={items}
+        loading={loading || !evts}
+        loadingText="Cargando información relacionada..."
+        suggestion={suggestion}
+        moneyDecimals={moneyDecimals}
+        onViewRecord={(id, type) => {
+          // Todos los tipos van por RecordViewModal (sin botones de edición ni cancelación)
+          setCrossViewId(id);
+          setCrossViewType(type);
+          setCrossViewOpen(true);
+        }}
+      />
     );
   }
 
@@ -2020,68 +2011,39 @@ export default function Page() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("drafts")}
-                      className={cls(
-                        "rounded-xl px-3 py-2 text-sm font-bold transition",
-                        activeTab === "drafts"
-                          ? "bg-[#123b63] text-white shadow"
-                          : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                      )}
-                    >
-                      Borradores
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("registered")}
-                      className={cls(
-                        "rounded-xl px-3 py-2 text-sm font-bold transition",
-                        activeTab === "registered"
-                          ? "bg-[#123b63] text-white shadow"
-                          : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                      )}
-                    >
-                      Registrados
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("reportes")}
-                      className={cls(
-                        "rounded-xl px-3 py-2 text-sm font-bold transition",
-                        activeTab === "reportes"
-                          ? "bg-[#123b63] text-white shadow"
-                          : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                      )}
-                    >
-                      Reportes
-                    </button>
+                    {([
+                      { key: "drafts",     label: "Borradores" },
+                      { key: "registered", label: "Registrados" },
+                    ] as { key: "drafts" | "registered"; label: string }[]).map(({ key, label }) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => switchTab(key)}
+                        className={cls(
+                          "rounded-xl px-3 py-2 text-sm font-bold transition",
+                          activeTab === key
+                            ? "bg-[#123b63] text-white shadow"
+                            : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
                   </div>
                   <div className="mt-2 text-[11px] text-slate-500">
                     {activeTab === "drafts"
                       ? "Documentos en borrador pendientes de registrar."
-                      : activeTab === "registered"
-                      ? "Documentos ya registrados o cancelados."
-                      : "Exporta listados con filtros y columnas a medida."}
+                      : "Documentos ya registrados o cancelados."}
                   </div>
                 </div>
-                {activeTab !== "reportes" && (
                 <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    className={tradeDocsTheme.btnFilter}
-                    onClick={() => setFiltersOpen(true)}
-                  >
-                    Filtros
-                  </button>
-                  <button
-                    type="button"
-                    className={tradeDocsTheme.btnSoft}
-                    onClick={() => setFilters(EMPTY_OTHER_DOC_FILTERS)}
-                  >
-                    Limpiar filtros
-                  </button>
+                  <FilterActionButtons
+                    hasActiveFilters={hasActiveFilters}
+                    onOpenFilters={() => setFiltersOpen(true)}
+                    onClearFilters={() => setFilters(EMPTY_OTHER_DOC_FILTERS)}
+                    onReport={downloadReport}
+                    reportTitle={`Descargar Excel — ${activeTab === "drafts" ? "Borradores" : "Registrados"} (con filtros aplicados)`}
+                  />
 
                   {/* ── Botones de acción masiva (solo pestaña Borradores) ── */}
                   {activeTab === "drafts" && filteredDrafts.length > 0 && canEdit && (
@@ -2144,16 +2106,14 @@ export default function Page() {
                       )}
                     </>
                   )}
+
                 </div>
-                )}
               </div>
             </div>
 
-            {/* Table / Reportes */}
+            {/* Table */}
             <div className="p-4">
-              {activeTab === "reportes" ? (
-                <OtherDocsReportTab companyId={companyId} />
-              ) : activeTab === "drafts" ? (
+              {activeTab === "drafts" ? (
                 <OtherDocsTable
                   rows={filteredDrafts}
                   loading={loadingDrafts}
@@ -2270,6 +2230,16 @@ export default function Page() {
         onSwitchToManual={handleSwitchToManual}
         accountPolicyByCode={postingPolicyByAccountCode}
         modalMsg={modalMsg}
+      />
+
+      {/* Vista cruzada — FISCAL o PAYMENT desde esta página */}
+      <RecordViewModal
+        companyId={companyId}
+        open={crossViewOpen}
+        onClose={() => { setCrossViewOpen(false); setCrossViewId(null); setCrossViewType(null); }}
+        recordId={crossViewId}
+        recordType={crossViewType}
+        zIndexClass="z-[110]"
       />
 
       {/* Cancel Modal */}

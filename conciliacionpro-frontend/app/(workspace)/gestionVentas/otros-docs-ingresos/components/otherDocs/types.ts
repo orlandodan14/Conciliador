@@ -1,4 +1,4 @@
-export type OtherDocType = "OTRO_INGRESO" | "DEVOLUCION";
+export type OtherDocType = "OTRO_INGRESO" | "CUSTOMER_ADVANCE" | "DEVOLUCION";
 export type OtherDocStatus = "BORRADOR" | "VIGENTE" | "CANCELADO";
 
 /** Cabecera que maneja el editor modal (en memoria) */
@@ -85,7 +85,9 @@ export type OtherDocListFilters = {
   number: string;
   counterparty_identifier: string;
   counterparty_name: string;
+  payment_state: string;
   amount_filter: NumericFilterValue;
+  balance_filter: NumericFilterValue;
 };
 
 export type NumericFilterOperator =

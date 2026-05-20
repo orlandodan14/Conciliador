@@ -193,6 +193,7 @@ export async function getMyRoleForCompany(
 export async function upsertDraftJournalEntry(args: {
   companyId: string;
   docId: string;
+  counterpartyId: string | null;
   entryDate: string;
   description: string;
   reference: string | null;
@@ -208,6 +209,7 @@ export async function upsertDraftJournalEntry(args: {
   const {
     companyId,
     docId,
+    counterpartyId,
     entryDate,
     description,
     reference,
@@ -239,6 +241,7 @@ export async function upsertDraftJournalEntry(args: {
     created_by: userId,
     posted_at: null,
     posted_by: null,
+    counterparty_id: counterpartyId ?? null,
     extra: {
       source: "trade_docs_sales",
       trade_doc_id: docId,

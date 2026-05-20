@@ -108,6 +108,7 @@ export default function OtherDocsImportModal({
             </div>
             <div className="mt-2 text-xs text-slate-500">
               Tipos válidos: <code className="bg-slate-100 px-1 rounded">OTRO_INGRESO</code>{" "}
+              <code className="bg-slate-100 px-1 rounded">CUSTOMER_ADVANCE</code>{" "}
               <code className="bg-slate-100 px-1 rounded">DEVOLUCION</code> ·{" "}
               Métodos de pago: <code className="bg-slate-100 px-1 rounded">EFECTIVO</code>{" "}
               <code className="bg-slate-100 px-1 rounded">TRANSFERENCIA</code>{" "}
@@ -238,9 +239,11 @@ export default function OtherDocsImportModal({
                               "inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold",
                               r.doc_type === "DEVOLUCION"
                                 ? "bg-rose-100 text-rose-800"
+                                : r.doc_type === "CUSTOMER_ADVANCE"
+                                ? "bg-indigo-100 text-indigo-800"
                                 : "bg-emerald-100 text-emerald-800"
                             )}>
-                              {r.doc_type === "DEVOLUCION" ? "DEV" : "OTI"}
+                              {r.doc_type === "DEVOLUCION" ? "DEV" : r.doc_type === "CUSTOMER_ADVANCE" ? "ANT" : "OTI"}
                             </span>
                           </td>
                           <td className="px-3 py-1.5 font-medium">{r.number || "—"}</td>

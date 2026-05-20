@@ -7,7 +7,7 @@ import { tradeDocsTheme } from "@/app/(workspace)/gestionVentas/docs-tribut-vent
 
 type Props = {
   open: boolean;
-  activeTab: "drafts" | "registered";
+  activeTab: string;
   filters: TradeDocListFilters;
   setFilters: React.Dispatch<React.SetStateAction<TradeDocListFilters>>;
   onClose: () => void;

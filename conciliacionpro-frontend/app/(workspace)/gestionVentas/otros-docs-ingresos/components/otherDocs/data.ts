@@ -16,7 +16,7 @@ import type {
 const TABLE = "trade_docs" as const;
 const DOC_CLASS = "NON_FISCAL" as const;
 const MODULE = "SALES" as const;
-const OUR_DOC_TYPES = ["OTRO_INGRESO", "DEVOLUCION"] as const;
+const OUR_DOC_TYPES = ["OTRO_INGRESO", "CUSTOMER_ADVANCE", "DEVOLUCION"] as const;
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -184,6 +184,7 @@ export async function getCurrentAccountingPeriodId(
 export async function saveJournalEntry(args: {
   companyId: string;
   docId: string;
+  counterpartyId: string | null;
   entryDate: string;
   description: string;
   currencyCode: string;
@@ -191,7 +192,7 @@ export async function saveJournalEntry(args: {
   existingJournalEntryId: string | null;
 }): Promise<string> {
   const {
-    companyId, docId, entryDate, description, currencyCode,
+    companyId, docId, counterpartyId, entryDate, description, currencyCode,
     userId, existingJournalEntryId,
   } = args;
 
@@ -210,6 +211,7 @@ export async function saveJournalEntry(args: {
     created_by: userId,
     posted_at: null,
     posted_by: null,
+    counterparty_id: counterpartyId ?? null,
     extra: { source: "trade_docs_non_fiscal", trade_doc_id: docId },
   };
 

@@ -6,6 +6,9 @@ import * as XLSX from "xlsx";
 import { CounterpartyCreateModal, Counterparty as CPCounterparty } from "@/app/(workspace)/components/counterparties/CounterpartyCreateModal";
 import { TradeDocEditorModal } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocEditorModal";
 import { OriginDocSearchModal } from "@/app/(workspace)/gestionVentas/components/OriginDocSearchModal";
+import { ExpandedTimelineTable, TimelineItem, itemStatusBadge } from "@/app/(workspace)/gestionVentas/components/ExpandedTimelineTable";
+import { RecordViewModal } from "@/app/(workspace)/gestionVentas/components/RecordViewModal";
+import FilterActionButtons from "@/app/(workspace)/components/FilterActionButtons";
 import TradeDocsTable from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocsTable";
 import type {
   AccountDefaultRow,
@@ -70,7 +73,6 @@ import {
 } from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/data";
 import BaseModal from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/BaseModal";
 import TradeDocsFiltersModal from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocsFiltersModal";
-import TradeDocsReportTab from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocsReportTab";
 import TradeDocsImportModal from "@/app/(workspace)/gestionVentas/docs-tribut-ventas/components/tradeDocs/TradeDocsImportModal";
 import {
   tradeDocsTheme,
@@ -127,7 +129,7 @@ const iconBtnDanger =
  * =========================
  */
 export default function Page() {
-  const [activeTab, setActiveTab] = useState<"drafts" | "registered" | "reportes">("drafts");
+  const [activeTab, setActiveTab] = useState<"drafts" | "registered">("drafts");
   const [companyId, setCompanyId] = useState<string>("");
   const [role, setRole] = useState<"OWNER" | "EDITOR" | "LECTOR" | null>(null);
   const canEdit = role === "OWNER" || role === "EDITOR";
@@ -161,51 +163,6 @@ export default function Page() {
   
 
   const [docId, setDocId] = useState<string | null>(null);
-
-    // viewer modal (solo lectura)
-    const [viewerOpen, setViewerOpen] = useState(false);
-    const [viewerDocId, setViewerDocId] = useState<string | null>(null);
-    const [viewerEditorTab, setViewerEditorTab] = useState<EditorTab>("CABECERA");
-    const [viewerShowCancelButton, setViewerShowCancelButton] = useState(false);
-    const [viewerHeader, setViewerHeader] = useState<DocHeader>({
-      doc_type: "INVOICE",
-      fiscal_doc_code: "",
-      status: "BORRADOR",
-      issue_date: todayISO(),
-      due_date: todayISO(),
-      series: "",
-      number: "",
-      currency_code: "CLP",
-      branch_id: "",
-      counterparty_identifier: "",
-      counterparty_name: "",
-      reference: "",
-      cancelled_at: "",
-      cancel_reason: "",
-      origin_doc_id: null,
-      origin_label: "",
-      origin_doc_type: null,
-      origin_fiscal_doc_code: null,
-      origin_issue_date: null,
-      origin_currency_code: null,
-      origin_net_taxable: null,
-      origin_net_exempt: null,
-      origin_tax_total: null,
-      origin_grand_total: null,
-      origin_balance: null,
-      origin_payment_status: null,
-      origin_status: null,
-    });
-
-    const [viewerLines, setViewerLines] = useState<DocLine[]>(
-      Array.from({ length: 4 }, (_, i) => makeDocLine(i + 1))
-    );
-
-    const [viewerPayments, setViewerPayments] = useState<PaymentRow[]>([]);
-
-    const [viewerJournalLines, setViewerJournalLines] = useState<JournalLine[]>(
-      Array.from({ length: 4 }, (_, i) => makeJournalLine(i + 1))
-    );
 
     const [cancelModalOpen, setCancelModalOpen] = useState(false);
     const [cancelMode, setCancelMode] = useState<"editor" | "viewer">("editor");
@@ -353,154 +310,76 @@ export default function Page() {
   const [timelineByDocId, setTimelineByDocId] = useState<Record<string, TradeDocTimelineRow[]>>({});
   const [timelineLoadingByDocId, setTimelineLoadingByDocId] = useState<Record<string, boolean>>({});
 
+  // ── Modal de vista cruzada (NON_FISCAL / PAYMENT desde esta página) ──────
+  const [crossViewOpen, setCrossViewOpen] = useState(false);
+  const [crossViewId, setCrossViewId] = useState<string | null>(null);
+  const [crossViewType, setCrossViewType] = useState<"FISCAL" | "NON_FISCAL" | "PAYMENT" | null>(null);
+
   function renderTimelineTable(row: DraftRow) {
-    const loading = timelineLoadingByDocId[row.id];
+    const loading  = timelineLoadingByDocId[row.id];
     const rawItems = timelineByDocId[row.id] || [];
 
-    const items = rawItems.filter((item) => {
-      const isRootDocRow =
-        item.event_type === "DOC" &&
-        item.related_doc_id === row.id;
+    const items: TimelineItem[] = rawItems
+      .filter((item) => !(item.event_type === "DOC" && item.related_doc_id === row.id))
+      .map((item, idx): TimelineItem => {
+        const negative  = Number(item.impact_sign || 0) < 0;
+        const typeLabel =
+          item.event_type === "PAYMENT"    ? "Cobro"
+          : item.doc_type === "INVOICE"    ? "Factura"
+          : item.doc_type === "CREDIT_NOTE"? "Nota crédito"
+          : item.doc_type === "DEBIT_NOTE" ? "Nota débito"
+          : item.doc_type === "DEVOLUCION" ? "Devolución"
+          : "Documento";
+        const docLabel =
+          item.event_type === "PAYMENT"
+            ? item.number || "Cobro aplicado"
+            : item.fiscal_doc_code
+            ? `${item.fiscal_doc_code} · ${item.display_folio || item.number || "—"}`
+            : item.display_folio || item.number || "—";
+        const fiscalTypes = ["INVOICE", "CREDIT_NOTE", "DEBIT_NOTE"];
+        const recordId   = item.event_type === "PAYMENT" ? item.payment_id : item.related_doc_id;
+        const recordType: "FISCAL" | "NON_FISCAL" | "PAYMENT" =
+          item.event_type === "PAYMENT" ? "PAYMENT"
+          : fiscalTypes.includes(item.doc_type || "") ? "FISCAL"
+          : "NON_FISCAL";
+        return {
+          key: `${item.event_type}-${item.related_doc_id || ""}-${item.payment_id || ""}-${idx}`,
+          date: item.event_date,
+          typeLabel,
+          docLabel,
+          amount: Number(item.amount || 0),
+          isNegative: negative,
+          affectsLabel: item.affects_label || "—",
+          badge: itemStatusBadge(item.event_type, item.item_status),
+          recordId,
+          recordType,
+        };
+      });
 
-      return !isRootDocRow;
-    });
-
-    // ── Badge por ítem (event_type + item_status del RPC) ───────────────────
-    function itemStatusBadge(eventType: string, itemStatus: string | null | undefined) {
-      if (eventType === "PAYMENT") return { text: "Aplicado",  cls: "bg-emerald-100 text-emerald-800" };
-      const s = String(itemStatus || "").toUpperCase();
-      if (s === "VIGENTE")   return { text: "Vigente",   cls: "bg-emerald-100 text-emerald-800" };
-      if (s === "CANCELADO") return { text: "Cancelado", cls: "bg-slate-100 text-slate-700" };
-      if (s === "BORRADOR")  return { text: "Borrador",  cls: "bg-amber-100 text-amber-800" };
-      return                        { text: s || "—",    cls: "bg-slate-100 text-slate-600" };
-    }
-
-    // ── Sugerencia de acción (debajo de la tabla) ────────────────────────────
-    const actionSuggestion = (() => {
-      const s = String(row.status || "").toUpperCase();
-      const b = Number(row.balance ?? 0);
+    const b = Number(row.balance ?? 0);
+    const s = String(row.status || "").toUpperCase();
+    const suggestion = (() => {
       if (s === "CANCELADO") return null;
       if (s === "BORRADOR")  return { text: "Registra el documento para continuar", cls: "bg-amber-100 text-amber-900" };
       if (b === 0) return null;
-      if (b < 0) return { text: "Requiere gestionar devolución", cls: "bg-rose-100 text-rose-800" };
-      return            { text: "Requiere gestionar cobro",      cls: "bg-amber-100 text-amber-900" };
+      if (b < 0)  return { text: "Requiere gestionar devolución", cls: "bg-rose-100 text-rose-800" };
+      return             { text: "Requiere gestionar cobro",      cls: "bg-amber-100 text-amber-900" };
     })();
 
-    if (loading) {
-      return <div className="text-[12px] text-slate-500">Cargando trazabilidad...</div>;
-    }
-
-    if (!items.length) {
-      return actionSuggestion ? (
-        <div className="flex justify-end">
-          <span className={cls(
-            "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold",
-            actionSuggestion.cls
-          )}>
-            {actionSuggestion.text}
-          </span>
-        </div>
-      ) : null;
-    }
-
     return (
-      <div className="flex flex-col gap-2">
-        <div className="overflow-hidden rounded-2xl ring-1 ring-slate-200/70">
-          <div className="grid grid-cols-[100px_140px_140px_180px_1fr_200px] bg-gradient-to-b from-slate-100 to-slate-50 text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#0b2b4f]">
-            <div className="px-3 py-2 border-r border-slate-200">Fecha</div>
-            <div className="px-3 py-2 border-r border-slate-200">Tipo</div>
-            <div className="px-3 py-2 border-r border-slate-200">Documento</div>
-            <div className="px-3 py-2 border-r border-slate-200 text-right">Monto</div>
-            <div className="px-3 py-2 border-r border-slate-200">Cómo afecta</div>
-            <div className="px-3 py-2">Estado</div>
-          </div>
-
-          {items.map((item, idx) => {
-            const negative = Number(item.impact_sign || 0) < 0;
-            const amountText = `${negative ? "-" : "+"} ${formatNumber(Number(item.amount || 0), moneyDecimals)}`;
-
-            const typeLabel =
-              item.event_type === "PAYMENT"
-                ? "Cobro"
-                : item.doc_type === "INVOICE"
-                ? "Factura"
-                : item.doc_type === "CREDIT_NOTE"
-                ? "Nota crédito"
-                : item.doc_type === "DEBIT_NOTE"
-                ? "Nota débito"
-                : item.doc_type === "DEVOLUCION"
-                ? "Devolución"
-                : "Documento";
-
-            const docLabel =
-              item.event_type === "PAYMENT"
-                ? item.number || "Cobro aplicado"
-                : item.fiscal_doc_code
-                ? `${item.fiscal_doc_code} · ${item.display_folio || item.number || "—"}`
-                : item.display_folio || item.number || "—";
-
-            const affectsLabel = item.affects_label || "—";
-            const badge = itemStatusBadge(item.event_type, item.item_status);
-
-            return (
-              <div
-                key={`${item.event_type}-${item.related_doc_id || ""}-${item.payment_id || ""}-${idx}`}
-                className={cls(
-                  "grid grid-cols-[100px_140px_140px_180px_1fr_200px] text-[12px]",
-                  idx % 2 === 0 ? "bg-white" : "bg-slate-50/70"
-                )}
-              >
-                <div className="px-3 py-2 border-t border-r border-slate-200/70 whitespace-nowrap">
-                  {item.event_date || "—"}
-                </div>
-                <div className="px-3 py-2 border-t border-r border-slate-200/70 whitespace-nowrap">
-                  <span className="font-semibold text-slate-800">{typeLabel}</span>
-                </div>
-                <div
-                  className="px-3 py-2 border-t border-r border-slate-200/70 truncate whitespace-nowrap font-medium text-slate-900"
-                  title={docLabel}
-                >
-                  {docLabel}
-                </div>
-                <div
-                  className={cls(
-                    "px-3 py-2 border-t border-r border-slate-200/70 text-right font-extrabold whitespace-nowrap",
-                    negative ? "text-rose-700" : "text-emerald-700"
-                  )}
-                >
-                  {amountText}
-                </div>
-                <div
-                  className="px-3 py-2 border-t border-r border-slate-200/70 truncate whitespace-nowrap text-slate-700"
-                  title={affectsLabel}
-                >
-                  {affectsLabel}
-                </div>
-                <div className="px-3 py-2 border-t border-slate-200/70">
-                  <span className={cls(
-                    "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold whitespace-nowrap",
-                    badge.cls
-                  )}>
-                    {badge.text}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* ── Sugerencia de acción (debajo de la tabla) ──────────────────── */}
-        {actionSuggestion && (
-          <div className="flex justify-end">
-            <span className={cls(
-              "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold",
-              actionSuggestion.cls
-            )}>
-              {actionSuggestion.text}
-            </span>
-          </div>
-        )}
-      </div>
+      <ExpandedTimelineTable
+        items={items}
+        loading={loading}
+        loadingText="Cargando trazabilidad..."
+        suggestion={suggestion}
+        moneyDecimals={moneyDecimals}
+        onViewRecord={(id, type) => {
+          // Todos los tipos van por RecordViewModal (FiscalDocViewModal no tiene botón Cancelar)
+          setCrossViewId(id);
+          setCrossViewType(type);
+          setCrossViewOpen(true);
+        }}
+      />
     );
   }
 
@@ -526,6 +405,52 @@ export default function Page() {
 
   function clearListFilters() {
     setListFilters(createEmptyTradeDocListFilters());
+  }
+
+  const hasActiveFilters =
+    !!(listFilters.issue_date_from || listFilters.issue_date_to ||
+       listFilters.doc_type || listFilters.fiscal_doc_code ||
+       listFilters.number || listFilters.counterparty_identifier ||
+       listFilters.counterparty_name || listFilters.payment_state ||
+       (listFilters.grand_total_filter.op && listFilters.grand_total_filter.value1) ||
+       (listFilters.balance_filter.op && listFilters.balance_filter.value1));
+
+  // ─── Cambio de tab (limpia filtros y selección) ───────────────────────────
+
+  function switchTab(tab: "drafts" | "registered") {
+    setActiveTab(tab);
+    clearListFilters();
+    clearDraftSelection();
+    clearRegisteredSelection();
+  }
+
+  // ─── Descargar reporte Excel del tab activo ────────────────────────────────
+
+  function downloadReport() {
+    const rows = activeTab === "drafts" ? filteredDrafts : filteredRegisteredDocs;
+    const tabLabel = activeTab === "drafts" ? "borradores" : "registrados";
+    const data = rows.map((r) => ({
+      "Fecha emisión":    r.issue_date ?? "",
+      "Tipo":             r.doc_type === "INVOICE" ? "Factura"
+                           : r.doc_type === "CREDIT_NOTE" ? "Nota de Crédito"
+                           : r.doc_type === "DEBIT_NOTE"  ? "Nota de Débito"
+                           : r.doc_type ?? "",
+      "Cód. fiscal":      r.fiscal_doc_code ?? "",
+      "Folio":            ([r.series, r.number].filter(Boolean).join("-")) || (r.number ?? ""),
+      "RUT / ID":         r.counterparty_identifier_snapshot ?? "",
+      "Nombre contraparte": r.counterparty_name_snapshot ?? "",
+      "Afecto":           Number(r.net_taxable ?? 0),
+      "Exento":           Number(r.net_exempt ?? 0),
+      "IVA":              Number(r.tax_total ?? 0),
+      "Total":            Number(r.grand_total ?? 0),
+      "Saldo":            r.balance != null ? Number(r.balance) : "",
+      "Estado":           r.status ?? "",
+      "Fecha registro":   r.created_at ? String(r.created_at).slice(0, 10) : "",
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Documentos");
+    XLSX.writeFile(wb, `docs_tributarios_${tabLabel}_${todayISO()}.xlsx`);
   }
 
   const filteredDrafts = useMemo(() => {
@@ -2569,6 +2494,12 @@ export default function Page() {
         getDefaultFiscalDocTypeIdByDocType(header.doc_type, fiscalCfg) ||
         null;
 
+      const resolvedCounterpartyId: string | null = (() => {
+        const key = normalizeIdentifier(header.counterparty_identifier || "");
+        const cp = key ? counterpartyMap[key] : null;
+        return (cp as any)?.id ?? null;
+      })();
+
       const headerPayloadFull: any = {
         company_id: companyId,
         doc_class: "FISCAL",
@@ -2583,11 +2514,7 @@ export default function Page() {
         branch_id: header.branch_id || null,
         fiscal_doc_type_id: resolvedFiscalDocTypeId,
         fiscal_doc_code: header.fiscal_doc_code || null,
-        counterparty_id: (() => {
-          const key = normalizeIdentifier(header.counterparty_identifier || "");
-          const cp = key ? counterpartyMap[key] : null;
-          return (cp as any)?.id ?? null;
-        })(),
+        counterparty_id: resolvedCounterpartyId,
         counterparty_identifier_snapshot: header.counterparty_identifier || null,
         counterparty_name_snapshot: header.counterparty_name || null,
         reference: header.reference || null,
@@ -2720,6 +2647,7 @@ export default function Page() {
       const draftJournalEntryId = await upsertDraftJournalEntry({
         companyId,
         docId: savedId,
+        counterpartyId: resolvedCounterpartyId ?? null,
         entryDate: header.issue_date,
         description: buildJournalEntryDescriptionFromHeader(header),
         reference: header.reference || null,
@@ -2834,6 +2762,8 @@ export default function Page() {
           auth_code: p.method === "TARJETA" ? (p.auth_code || null) : null,
           total_amount: toNum(p.amount),
           notes: null,
+          journal_entry_id: draftJournalEntryId ?? null,
+          counterparty_id: resolvedCounterpartyId ?? null,
           extra: {
             source: "trade_docs_sales",
             trade_doc_id: savedId,
@@ -3167,23 +3097,6 @@ export default function Page() {
     });
   }
 
-  async function cancelViewerDocMVP() {
-    if (!allowCancelSales) {
-      setMessages([{ level: "error", text: "La empresa tiene deshabilitada la cancelación de ventas." }]);
-      return;
-    }
-
-    if (!viewerDocId) return;
-
-    await openCancelFlow({
-      mode: "viewer",
-      tradeDocId: viewerDocId,
-      status: viewerHeader.status,
-      cancelledAt: viewerHeader.cancelled_at || null,
-      cancelReason: viewerHeader.cancel_reason || null,
-    });
-  }
-
   async function confirmCancelTradeDoc() {
     if (!companyId || !canEdit) return;
     if (!cancelTargetDocId) return;
@@ -3327,13 +3240,6 @@ export default function Page() {
 
       if (cancelMode === "editor") {
         setHeader((prev) => ({
-          ...prev,
-          status: "CANCELADO",
-          cancelled_at: cancelDate,
-          cancel_reason: cancelReason || "",
-        }));
-      } else {
-        setViewerHeader((prev) => ({
           ...prev,
           status: "CANCELADO",
           cancelled_at: cancelDate,
@@ -3655,23 +3561,6 @@ export default function Page() {
     }
   }
 
-  async function openRegisteredDocView(tradeDocId: string) {
-    if (!companyId) return;
-
-    const row =
-      registeredDocs.find((x) => x.id === tradeDocId) ||
-      drafts.find((x) => x.id === tradeDocId);
-
-    if (!row) {
-      setMessages([
-        { level: "error", text: "No se encontró el documento para abrir en modo consulta." },
-      ]);
-      return;
-    }
-
-    await openViewDoc(row as any, { allowCancelInViewer: true });
-  }
-
   async function deleteDraftInternal(draftId: string) {
     if (!companyId) throw new Error("Falta companyId.");
     if (!draftId) throw new Error("Falta draftId.");
@@ -3820,280 +3709,6 @@ export default function Page() {
     }
   }
 
-  async function openViewDoc(
-    doc: OriginDocLite,
-    options?: { allowCancelInViewer?: boolean }
-  ) {
-    if (!companyId) return;
-
-    try {
-      setMessages([]);
-      setViewerShowCancelButton(Boolean(options?.allowCancelInViewer));
-
-      const tradeDocId = doc.id;
-
-      const { data: row, error: rowError } = await supabase
-        .from("trade_docs")
-        .select(`
-          id,
-          doc_type,
-          status,
-          issue_date,
-          due_date,
-          series,
-          number,
-          currency_code,
-          branch_id,
-          counterparty_identifier_snapshot,
-          counterparty_name_snapshot,
-          reference,
-          cancelled_at,
-          cancel_reason,
-          origin_doc_id,
-          fiscal_doc_code,
-          journal_entry_id
-        `)
-        .eq("company_id", companyId)
-        .eq("id", tradeDocId)
-        .maybeSingle();
-
-      if (rowError) throw rowError;
-      if (!row) throw new Error("No se encontró el documento.");
-
-      const { data: lineRows, error: lineError } = await supabase
-        .from("trade_doc_lines")
-        .select("line_no,item_id,sku,description,qty,unit_price,tax_kind,exempt_amount,taxable_amount,tax_rate,tax_amount,line_total")
-        .eq("company_id", companyId)
-        .eq("trade_doc_id", tradeDocId)
-        .order("line_no", { ascending: true });
-
-      if (lineError) throw lineError;
-
-      const { data: payAllocRows, error: payAllocError } = await supabase
-        .from("payment_allocations")
-        .select(`
-          allocated_amount,
-          payments (
-            id,
-            payment_date,
-            method,
-            reference,
-            card_kind,
-            card_last4,
-            auth_code,
-            total_amount,
-            extra
-          )
-        `)
-        .eq("company_id", companyId)
-        .eq("trade_doc_id", tradeDocId);
-
-      if (payAllocError) throw payAllocError;
-
-      let parsedPayments: PaymentRow[] = (((payAllocRows as any[]) || []).map((r: any) => {
-        const p = Array.isArray(r.payments) ? r.payments[0] : r.payments;
-
-        return {
-          id: String(p?.id || uid()),
-          payment_date: String(p?.payment_date || header.issue_date || todayISO()),
-          method: (p?.method || "TRANSFERENCIA") as PaymentRow["method"],
-          amount: r.allocated_amount != null
-            ? String(r.allocated_amount)
-            : String(p?.total_amount ?? ""),
-          card_kind: (p?.card_kind || "") as PaymentRow["card_kind"],
-          card_last4: String(p?.card_last4 || ""),
-          auth_code: String(p?.auth_code || ""),
-          reference: String(p?.reference || ""),
-        };
-      })) as PaymentRow[];
-
-      if (parsedPayments.length === 0) {
-        const { data: payFallback, error: payFallbackError } = await supabase
-          .from("payments")
-          .select("id,payment_date,method,reference,card_kind,card_last4,auth_code,total_amount,extra")
-          .eq("company_id", companyId);
-
-        if (payFallbackError) throw payFallbackError;
-
-        parsedPayments = (((payFallback as any[]) || [])
-          .filter((p: any) => p?.extra?.trade_doc_id === tradeDocId)
-          .map((p: any) => ({
-            id: String(p.id || uid()),
-            payment_date: String(p.payment_date || (row as any).issue_date || todayISO()),
-            method: (p.method || "TRANSFERENCIA") as PaymentRow["method"],
-            amount: String(p.total_amount ?? ""),
-            card_kind: (p.card_kind || "") as PaymentRow["card_kind"],
-            card_last4: String(p.card_last4 || ""),
-            auth_code: String(p.auth_code || ""),
-            reference: String(p.reference || ""),
-          }))) as PaymentRow[];
-      }
-
-      let originRow: any = null;
-      let originLabel = "";
-      const originId = (row as any).origin_doc_id ?? null;
-
-      if (originId) {
-        const { data: od } = await supabase
-          .from("trade_docs")
-          .select("id,doc_type,fiscal_doc_code,series,number,issue_date,net_taxable,net_exempt,tax_total,grand_total,currency_code,status")
-          .eq("company_id", companyId)
-          .eq("id", originId)
-          .maybeSingle();
-
-        originRow = od;
-        originLabel = folioLabel((od as any)?.series, (od as any)?.number);
-      }
-
-      const parsedLines: DocLine[] = (((lineRows as any[]) || []).map((r: any) => {
-        const taxKind = String(r.tax_kind || "").toUpperCase();
-        const isTaxable = taxKind === "EXENTO" ? false : true;
-
-        const exemptAmount = Number(r.exempt_amount || 0);
-        const taxableAmount = Number(r.taxable_amount || 0);
-        const taxAmount = Number(r.tax_amount || 0);
-        const lineTotal = Number(r.line_total || 0);
-
-        return {
-          line_no: Number(r.line_no) || 1,
-          item_id: r.item_id || null,
-          sku: r.sku || "",
-          description: r.description || "",
-          qty: r.qty != null ? String(r.qty) : "1",
-          unit_price: r.unit_price != null ? String(r.unit_price) : "",
-          is_taxable: isTaxable,
-          tax_rate: r.tax_rate != null ? String(r.tax_rate) : (defaultTaxRate || "19"),
-          ex_override: exemptAmount > 0 ? String(exemptAmount) : "",
-          af_override: taxableAmount > 0 ? String(taxableAmount) : "",
-          iva_override: taxAmount > 0 ? String(taxAmount) : "",
-          total_override: lineTotal > 0 ? String(lineTotal) : "",
-        };
-      })) as DocLine[];
-
-      let journalRows: JournalLine[] = [];
-      const journalEntryId = (row as any).journal_entry_id ?? null;
-
-      if (journalEntryId) {
-        const { data: jlData, error: jlError } = await supabase
-          .from("journal_entry_lines")
-          .select(`
-            line_no,
-            line_description,
-            debit,
-            credit,
-            account_code_snapshot,
-            business_line_id,
-            branch_id,
-            business_lines (
-              id,
-              code,
-              name
-            ),
-            branches (
-              id,
-              code,
-              name
-            )
-          `)
-          .eq("company_id", companyId)
-          .eq("journal_entry_id", journalEntryId)
-          .order("line_no", { ascending: true });
-
-        if (jlError) throw jlError;
-
-        journalRows = ((jlData as any[]) || []).map((r: any) => {
-          const bu = Array.isArray(r.business_lines) ? r.business_lines[0] : r.business_lines;
-          const br = Array.isArray(r.branches) ? r.branches[0] : r.branches;
-
-          return {
-            line_no: Number(r.line_no) || 1,
-            account_code: String(r.account_code_snapshot || ""),
-            description: String(r.line_description || ""),
-            debit: r.debit != null ? String(r.debit) : "",
-            credit: r.credit != null ? String(r.credit) : "",
-            cost_center_id: null,
-            business_line_id: r.business_line_id || null,
-            branch_id: r.branch_id || null,
-            cost_center_code: "",
-            business_line_code: String(bu?.code || ""),
-            branch_code: String(br?.code || ""),
-          };
-        });
-      }
-
-      setViewerDocId(tradeDocId);
-
-      setViewerHeader({
-        doc_type: (row as any).doc_type,
-        fiscal_doc_code: String((row as any).fiscal_doc_code ?? ""),
-        status: (row as any).status,
-        issue_date: (row as any).issue_date || todayISO(),
-        due_date: (row as any).due_date || (row as any).issue_date || todayISO(),
-        series: (row as any).series || "",
-        number: (row as any).number || "",
-        currency_code: (row as any).currency_code || baseCurrency,
-        branch_id: (row as any).branch_id || "",
-        counterparty_identifier: (row as any).counterparty_identifier_snapshot || "",
-        counterparty_name: (row as any).counterparty_name_snapshot || "",
-        reference: (row as any).reference || "",
-        cancelled_at: (row as any).cancelled_at || "",
-        cancel_reason: (row as any).cancel_reason || "",
-        origin_doc_id: originId,
-        origin_label: originLabel,
-        origin_doc_type: originRow?.doc_type ?? null,
-        origin_fiscal_doc_code: originRow?.fiscal_doc_code ?? null,
-        origin_issue_date: originRow?.issue_date ?? null,
-        origin_currency_code: originRow?.currency_code ?? null,
-        origin_net_taxable: originRow?.net_taxable ?? null,
-        origin_net_exempt: originRow?.net_exempt ?? null,
-        origin_tax_total: originRow?.tax_total ?? null,
-        origin_grand_total: originRow?.grand_total ?? null,
-        origin_balance: originRow?.grand_total ?? null,
-        origin_payment_status: null,
-        origin_status: originRow?.status ?? null,
-      });
-
-      setViewerLines(
-        parsedLines.length >= 4
-          ? renumber(parsedLines)
-          : renumber([
-              ...parsedLines,
-              ...Array.from({ length: Math.max(4 - parsedLines.length, 0) }, (_, i) =>
-                makeDocLine(parsedLines.length + i + 1)
-              ),
-            ])
-      );
-
-      setViewerPayments(
-        (row as any).doc_type === "CREDIT_NOTE" || (row as any).doc_type === "DEBIT_NOTE"
-          ? []
-          : parsedPayments
-      );
-
-      setViewerJournalLines(
-        journalRows.length >= 4
-          ? renumber(journalRows)
-          : renumber([
-              ...journalRows,
-              ...Array.from({ length: Math.max(4 - journalRows.length, 0) }, (_, i) =>
-                makeJournalLine(journalRows.length + i + 1)
-              ),
-            ])
-      );
-
-      setViewerEditorTab("CABECERA");
-      setViewerOpen(true);
-    } catch (e: any) {
-      setMessages([
-        {
-          level: "error",
-          text: e?.message || "No se pudo abrir el documento en modo consulta.",
-        },
-      ]);
-    }
-  }
-
-
   async function deleteDraft(draftId: string) {
     if (!companyId || !canEdit) return;
 
@@ -4131,21 +3746,6 @@ export default function Page() {
     return branchById[header.branch_id]?.code || "";
   }, [header.branch_id, branchById]);
 
-  const viewerHeaderBranchCode = useMemo(() => {
-    if (!viewerHeader.branch_id) return "";
-    return branchById[viewerHeader.branch_id]?.code || "";
-  }, [viewerHeader.branch_id, branchById]);
-
-  function setViewerHeaderBranchCode(rawCode: string) {
-    const typedCode = String(rawCode || "").trim();
-    const foundBranch = typedCode ? branchByCode[typedCode] : null;
-
-    setViewerHeader((h) => ({
-      ...h,
-      branch_id: foundBranch?.id || "",
-    }));
-  }
-  
   const accountPolicyByCode = useMemo(() => {
     const map: Record<
       string,
@@ -5045,75 +4645,42 @@ export default function Page() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("drafts")}
-                      className={cls(
-                        "rounded-xl px-3 py-2 text-sm font-bold transition",
-                        activeTab === "drafts"
-                          ? "bg-[#123b63] text-white shadow"
-                          : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                      )}
-                    >
-                      Borradores
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("registered")}
-                      className={cls(
-                        "rounded-xl px-3 py-2 text-sm font-bold transition",
-                        activeTab === "registered"
-                          ? "bg-[#123b63] text-white shadow"
-                          : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                      )}
-                    >
-                      Registrados
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("reportes")}
-                      className={cls(
-                        "rounded-xl px-3 py-2 text-sm font-bold transition",
-                        activeTab === "reportes"
-                          ? "bg-[#123b63] text-white shadow"
-                          : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                      )}
-                    >
-                      Reportes
-                    </button>
+                    {([
+                      { key: "drafts",     label: "Borradores" },
+                      { key: "registered", label: "Registrados" },
+                    ] as { key: "drafts" | "registered"; label: string }[]).map(({ key, label }) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => switchTab(key)}
+                        className={cls(
+                          "rounded-xl px-3 py-2 text-sm font-bold transition",
+                          activeTab === key
+                            ? "bg-[#123b63] text-white shadow"
+                            : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
                   </div>
 
                   <div className="mt-2 text-[11px] text-slate-500">
                     {activeTab === "drafts"
                       ? "Documentos en borrador pendientes de registrar."
-                      : activeTab === "registered"
-                      ? "Documentos ya registrados o cancelados."
-                      : "Exporta listados con filtros y columnas a medida."}
+                      : "Documentos ya registrados o cancelados."}
                   </div>
                 </div>
 
-                {activeTab !== "reportes" && (
                 <div className="flex flex-wrap items-center gap-2">
 
-                  <button
-                    type="button"
-                    className={tradeDocsTheme.btnFilter}
-                    onClick={() => setFiltersOpen(true)}
-                    title="Abrir filtros"
-                  >
-                    Filtros
-                  </button>
-
-                  <button
-                    type="button"
-                    className={tradeDocsTheme.btnSoft}
-                    onClick={clearListFilters}
-                    title="Limpiar filtros"
-                  >
-                    Limpiar filtros
-                  </button>
+                  <FilterActionButtons
+                    hasActiveFilters={hasActiveFilters}
+                    onOpenFilters={() => setFiltersOpen(true)}
+                    onClearFilters={clearListFilters}
+                    onReport={downloadReport}
+                    reportTitle={`Descargar Excel — ${activeTab === "drafts" ? "Borradores" : "Registrados"} (con filtros aplicados)`}
+                  />
 
                   {activeTab === "drafts" && drafts.length ? (
                     <>
@@ -5160,15 +4727,13 @@ export default function Page() {
                       </button>
                     </>
                   ) : null}
+
                 </div>
-                )}
               </div>
             </div>
 
             <div className="p-4">
-              {activeTab === "reportes" ? (
-                <TradeDocsReportTab companyId={companyId} />
-              ) : activeTab === "drafts" ? (
+              {activeTab === "drafts" ? (
                 <TradeDocsTable
                   rows={filteredDrafts}
                   loading={loadingDrafts}
@@ -5270,7 +4835,9 @@ export default function Page() {
                   onToggleSelectAll={toggleSelectAllRegistered}
                   onToggleRow={toggleRegistered}
                   onOpenRow={(id) => {
-                    void openRegisteredDocView(id);
+                    setCrossViewId(id);
+                    setCrossViewType("FISCAL");
+                    setCrossViewOpen(true);
                   }}
                   onExpandRow={(row) => {
                     void loadTimeline(row.id);
@@ -5391,108 +4958,6 @@ export default function Page() {
         cancelDocMVP={cancelDocMVP}
       />
 
-      <TradeDocEditorModal
-        open={viewerOpen}
-        onClose={() => setViewerOpen(false)}
-        zIndexClass="z-[90]"
-        mode="view"
-        theme={{
-          header: tradeDocsTheme.header,
-          glowA: tradeDocsTheme.glowA,
-          glowB: tradeDocsTheme.glowB,
-          btnPrimary: tradeDocsTheme.btnPrimary,
-          btnSoft: tradeDocsTheme.btnSoft,
-          card: tradeDocsTheme.card,
-        }}
-        title={viewerDocId ? `Ver documento (${viewerDocId.slice(0, 8)}…)` : "Ver documento"}
-        subtitle="Ventas • Consulta"
-        widthClass="w-[min(1200px,96vw)]"
-        canEdit={false}
-        showCancelButton={viewerShowCancelButton && allowCancelSales && viewerHeader.status === "VIGENTE"}
-        docId={viewerDocId}
-        header={viewerHeader}
-        setHeader={setViewerHeader}
-        headerBranchCode={viewerHeaderBranchCode}
-        setHeaderBranchCode={setViewerHeaderBranchCode}
-        editorTab={viewerEditorTab}
-        setEditorTab={setViewerEditorTab}
-        fiscalCfg={fiscalCfg}
-        fiscalDocTypes={fiscalDocTypes}
-        baseCurrency={baseCurrency}
-        branches={branches}
-        items={items}
-        businessLines={businessLines}
-        counterpartiesAvailable={false}
-        counterpartyMap={{}}
-        openCreateCounterparty={() => {}}
-        resolveCounterpartyHeader={() => {}}
-        needsOrigin={viewerHeader.doc_type === "CREDIT_NOTE" || viewerHeader.doc_type === "DEBIT_NOTE"}
-        disallowPayments={
-          viewerHeader.doc_type === "CREDIT_NOTE" || viewerHeader.doc_type === "DEBIT_NOTE"
-        }
-        onOpenOriginSearch={() => {}}
-        clearOrigin={() => {}}
-        lines={viewerLines}
-        setLines={setViewerLines}
-        addDocLine={() => {}}
-        removeDocLine={() => {}}
-        updateDocLine={() => {}}
-        payments={viewerPayments}
-        addPaymentRow={() => {}}
-        removePaymentRow={() => {}}
-        updatePaymentRow={() => {}}
-        journalLines={viewerJournalLines}
-        addJournalLine={() => {}}
-        removeJournalLine={() => {}}
-        updateJournalLine={() => {}}
-        journalAutoMode={false}
-        recalcJournalAuto={() => {}}
-        accounts={accounts}
-        accByCode={accByCode}
-        accountPolicyByCode={accountPolicyByCode}
-        headerCell={tradeDocsHeaderCell}
-        headerSub={tradeDocsHeaderSub}
-        bodyCell={tradeDocsBodyCell}
-        cellInputBase={tradeDocsCellInputBase}
-        cellInputRight={tradeDocsCellInputRight}
-        moneyDecimals={moneyDecimals}
-        totals={{
-          net_taxable: viewerLines.reduce((s, l) => s + calcLineAmounts(l).af, 0),
-          net_exempt: viewerLines.reduce((s, l) => s + calcLineAmounts(l).ex, 0),
-          tax_total: viewerLines.reduce((s, l) => s + calcLineAmounts(l).iva, 0),
-          grand_total: viewerLines.reduce((s, l) => s + calcLineAmounts(l).total, 0),
-          paid: viewerPayments.reduce((s, p) => s + toNum(p.amount), 0),
-          balance:
-            viewerLines.reduce((s, l) => s + calcLineAmounts(l).total, 0) -
-            viewerPayments.reduce((s, p) => s + toNum(p.amount), 0),
-        }}
-        badgeTypeClass={
-          viewerHeader.doc_type === "INVOICE"
-            ? "bg-sky-100 text-sky-800"
-            : viewerHeader.doc_type === "DEBIT_NOTE"
-            ? "bg-fuchsia-100 text-fuchsia-800"
-            : "bg-amber-100 text-amber-900"
-        }
-        badgeStatusClass={
-          viewerHeader.status === "VIGENTE"
-            ? "bg-emerald-100 text-emerald-800"
-            : viewerHeader.status === "CANCELADO"
-            ? "bg-rose-100 text-rose-800"
-            : "bg-slate-100 text-slate-800"
-        }
-        formatNumber={formatNumber}
-        calcLineAmounts={(l) => {
-          const { ex, af, iva, total, total_display } = calcLineAmounts(l);
-          return { ex, af, iva, total, total_display };
-        }}
-        ellipsis={ellipsis}
-        folioLabel={folioLabel}
-        messages={[]}
-        saveDraftMVP={async () => {}}
-        markAsVigenteMVP={async () => {}}
-        deleteDraftMVP={async () => {}}
-        cancelDocMVP={cancelViewerDocMVP}
-      />
 
       <OriginDocSearchModal
         open={originSearchOpen}
@@ -5533,11 +4998,23 @@ export default function Page() {
         }}
         onPick={pickOrigin}
         onViewDoc={(doc) => {
-          void openViewDoc(doc);
+          setCrossViewId(doc.id);
+          setCrossViewType("FISCAL");
+          setCrossViewOpen(true);
         }}
         headerCell={tradeDocsHeaderCell}
         headerSub={tradeDocsHeaderSub}
         bodyCell={tradeDocsBodyCell}
+      />
+
+      {/* Vista cruzada — NON_FISCAL o PAYMENT desde esta página */}
+      <RecordViewModal
+        companyId={companyId}
+        open={crossViewOpen}
+        onClose={() => { setCrossViewOpen(false); setCrossViewId(null); setCrossViewType(null); }}
+        recordId={crossViewId}
+        recordType={crossViewType}
+        zIndexClass="z-[110]"
       />
 
       {/* =======================

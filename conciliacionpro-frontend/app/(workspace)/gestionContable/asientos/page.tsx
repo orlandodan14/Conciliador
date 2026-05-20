@@ -1,9 +1,21 @@
-"use client";
+﻿"use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
+import { Pencil, CheckCircle2, Trash2, Eye, ChevronsUpDown, ChevronUp, ChevronDown } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 import CounterpartyCreateModal from "@/app/(workspace)/components/counterparties/CounterpartyCreateModal";
+import FilterActionButtons from "@/app/(workspace)/components/FilterActionButtons";
+import AsientosFiltersModal, {
+  type AsientosFilters,
+  EMPTY_ASIENTOS_FILTERS,
+} from "@/app/(workspace)/gestionContable/asientos/components/AsientosFiltersModal";
+import AsientosImportModal, {
+  type AsientosImportIssue,
+  type AsientosImportPreviewRow,
+} from "@/app/(workspace)/gestionContable/asientos/components/AsientosImportModal";
+import TradeDocViewerModal from "@/app/(workspace)/gestionContable/asientos/components/TradeDocViewerModal";
+import CobroViewerModal    from "@/app/(workspace)/gestionContable/asientos/components/CobroViewerModal";
 
 /**
  * =========================
@@ -160,7 +172,6 @@ type Counterparty = {
 type EntryHeader = {
   entry_date: string;
   description: string;
-  reference: string; // num_doc en Excel
   currency_code: string;
 };
 
@@ -183,19 +194,10 @@ type EntryLine = {
   counterparty_identifier: string;
   counterparty_name_resolved: string;
 
-  line_reference: string;
-
   // segmentación por código (teclado)
   cost_center_code: string;
   business_line_code: string;
   branch_code: string;
-
-  // Item = SKU
-  item_code: string;
-
-  // impuestos por código/tasa (UI/validación). NO se insertan si tu tabla no los tiene.
-  tax_code: string;
-  tax_rate: string;
 
   details_open: boolean;
 
@@ -207,13 +209,9 @@ type EntryLine = {
       | "debit"
       | "credit"
       | "counterparty_identifier"
-      | "line_reference"
       | "cost_center_code"
       | "business_line_code"
-      | "branch_code"
-      | "item_code"
-      | "tax_code"
-      | "tax_rate",
+      | "branch_code",
       boolean
     >
   >;
@@ -232,10 +230,12 @@ type DraftHeaderRow = {
   company_id: string;
   entry_date: string;
   description: string;
-  reference: string | null;
+  entry_number_formatted?: string | null;
+  counterparty_id?: string | null;
   currency_code: string;
   status: string;
   created_at?: string | null;
+  extra?: any;
 };
 
 type DraftWithLines = {
@@ -244,14 +244,12 @@ type DraftWithLines = {
     line_no: number;
     account_node_id: string | null;
     line_description: string | null;
-    line_reference: string | null;
     debit: number | null;
     credit: number | null;
     counterparty_id: string | null;
     cost_center_id: string | null;
     business_line_id?: string | null;
     branch_id?: string | null;
-    item_id?: string | null;
   }>;
 };
 
@@ -318,15 +316,9 @@ function makeLine(no: number): EntryLine {
     counterparty_identifier: "",
     counterparty_name_resolved: "",
 
-    line_reference: "",
-
     cost_center_code: "",
     business_line_code: "",
     branch_code: "",
-    item_code: "",
-
-    tax_code: "",
-    tax_rate: "",
 
     details_open: false,
 
@@ -336,6 +328,110 @@ function makeLine(no: number): EntryLine {
 
 function makeLines(n: number): EntryLine[] {
   return Array.from({ length: n }, (_, i) => makeLine(i + 1));
+}
+
+/**
+ * =========================
+ * SourceDocCard — muestra info del documento de origen
+ * =========================
+ */
+function SourceDocCard({
+  doc,
+  source,
+  moneyDecimals,
+}: {
+  doc: any;
+  source: string;
+  moneyDecimals: number;
+}) {
+  const statusCls =
+    doc.status === "VIGENTE"
+      ? "bg-emerald-100 text-emerald-800"
+      : doc.status === "CANCELADO"
+      ? "bg-rose-100 text-rose-800"
+      : "bg-amber-100 text-amber-800";
+
+  const moduleLabel =
+    source === "cobros"
+      ? "Cobros"
+      : source === "docs-tribut-ventas" || source === "trade_docs"
+      ? "Documentos Tributarios"
+      : source === "otros-docs-ingresos"
+      ? "Otros Ingresos"
+      : source;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3 flex flex-wrap gap-x-6 gap-y-2 text-xs">
+      <div>
+        <div className="text-slate-400 uppercase tracking-wide font-medium">
+          Módulo
+        </div>
+        <div className="font-semibold text-slate-800 mt-0.5">{moduleLabel}</div>
+      </div>
+      {(doc.counterparty_name_snapshot || doc.counterparty_identifier_snapshot) && (
+        <div>
+          <div className="text-slate-400 uppercase tracking-wide font-medium">
+            Tercero
+          </div>
+          <div className="font-semibold text-slate-800 mt-0.5">
+            {doc.counterparty_name_snapshot || ""}
+            {doc.counterparty_identifier_snapshot && (
+              <span className="ml-1 text-slate-500 font-normal">
+                ({doc.counterparty_identifier_snapshot})
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+      {(doc.payment_date || doc.issue_date) && (
+        <div>
+          <div className="text-slate-400 uppercase tracking-wide font-medium">
+            Fecha
+          </div>
+          <div className="font-semibold text-slate-800 mt-0.5">
+            {doc.payment_date || doc.issue_date}
+          </div>
+        </div>
+      )}
+      {(doc.total_amount !== undefined || doc.grand_total !== undefined) && (
+        <div>
+          <div className="text-slate-400 uppercase tracking-wide font-medium">
+            Monto
+          </div>
+          <div className="font-mono font-semibold text-slate-800 mt-0.5">
+            {formatNumber(
+              Number(doc.total_amount ?? doc.grand_total ?? 0),
+              moneyDecimals
+            )}{" "}
+            {doc.currency_code || ""}
+          </div>
+        </div>
+      )}
+      {doc.status && (
+        <div>
+          <div className="text-slate-400 uppercase tracking-wide font-medium">
+            Estado
+          </div>
+          <span
+            className={cls(
+              "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium mt-0.5",
+              statusCls
+            )}
+          >
+            {doc.status}
+          </span>
+        </div>
+      )}
+      {doc.description && (
+        <div className="min-w-[120px]">
+          <div className="text-slate-400 uppercase tracking-wide font-medium">
+            Descripción
+          </div>
+          <div className="text-slate-700 mt-0.5">{doc.description}</div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -352,6 +448,14 @@ export default function Page() {
   const [importState, setImportState] = useState<
     "idle" | "reading" | "parsing" | "validating" | "saving" | "done"
   >("idle");
+  const [importOpen, setImportOpen] = useState(false);
+  const [importParsedEntries, setImportParsedEntries] = useState<ExcelEntryParsed[]>([]);
+  const [importPreviewRows, setImportPreviewRows] = useState<AsientosImportPreviewRow[]>([]);
+  const [importModalIssues, setImportModalIssues] = useState<AsientosImportIssue[]>([]);
+
+  // ── Viewers de documento origen ────────────────────────────────────────────
+  const [tradeDocViewerId, setTradeDocViewerId] = useState<string | null>(null);
+  const [cobroViewerId,    setCobroViewerId]    = useState<string | null>(null);
 
 
   const [settings, setSettings] = useState<AccountingSettings | null>(null);
@@ -397,11 +501,10 @@ export default function Page() {
   const [header, setHeader] = useState<EntryHeader>({
     entry_date: todayISO(),
     description: "",
-    reference: "",
     currency_code: "—",
   });
 
-  const [lines, setLines] = useState<EntryLine[]>(() => makeLines(20));
+  const [lines, setLines] = useState<EntryLine[]>(() => makeLines(10));
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
 
   // Draft/post state
@@ -412,9 +515,8 @@ export default function Page() {
   // drafts list
   const [drafts, setDrafts] = useState<DraftWithLines[]>([]);
   const [loadingDrafts, setLoadingDrafts] = useState(false);
-
-  // Excel
-  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [loadingMoreDrafts, setLoadingMoreDrafts] = useState(false);
+  const [draftsHasMore, setDraftsHasMore] = useState(false);
 
   // Counterparty modal
   // Counterparty modal (REUTILIZABLE)
@@ -422,6 +524,27 @@ export default function Page() {
     open: false,
     identifier: "",
   });
+
+  // ── Tabs, modal editor, expand ─────────────────────────────────
+  const [activeTab, setActiveTab] = useState<"drafts" | "registered">("drafts");
+  const [registered, setRegistered] = useState<DraftWithLines[]>([]);
+  const [loadingRegistered, setLoadingRegistered] = useState(false);
+  const [loadingMoreRegistered, setLoadingMoreRegistered] = useState(false);
+  const [registeredHasMore, setRegisteredHasMore] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [modalReadOnly, setModalReadOnly] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [pageMsg, setPageMsg] = useState<{ level: "error" | "success"; text: string } | null>(null);
+  const [sourceDocMap, setSourceDocMap] = useState<Record<string, any>>({});
+  // tabla sort
+  const [sortCol, setSortCol] = useState<string>("created_at");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  // selección de filas
+  const [selectedRows, setSelectedRows] = useState<Record<string, boolean>>({});
+
+  // ── Filtros ─────────────────────────────────────────────────────────────────
+  const [filters, setFilters] = useState<AsientosFilters>(EMPTY_ASIENTOS_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   /**
    * =========================
@@ -476,6 +599,125 @@ export default function Page() {
     return m;
   }, [items]);
 
+  // ── hasActiveFilters ──────────────────────────────────────────────────────
+  const hasActiveFilters = useMemo(() => {
+    const f = filters;
+    return !!(
+      f.entry_date_from || f.entry_date_to ||
+      f.source || f.currency_code ||
+      f.counterparty_identifier || f.counterparty_name || f.description ||
+      (f.debit_filter.op && f.debit_filter.value1) ||
+      (f.credit_filter.op && f.credit_filter.value1)
+    );
+  }, [filters]);
+
+  // ── Filtrado client-side ──────────────────────────────────────────────────
+  function applyNumericFilter(
+    value: number,
+    f: AsientosFilters["debit_filter"]
+  ): boolean {
+    if (!f.op) return true;
+    const v1 = Number(f.value1 || 0);
+    const v2 = Number(f.value2 || 0);
+    switch (f.op) {
+      case "eq":      return value === v1;
+      case "neq":     return value !== v1;
+      case "gt":      return value > v1;
+      case "gte":     return value >= v1;
+      case "lt":      return value < v1;
+      case "lte":     return value <= v1;
+      case "between": return value >= v1 && value <= v2;
+      default:        return true;
+    }
+  }
+
+  function filterRows(rows: DraftWithLines[]): DraftWithLines[] {
+    const f = filters;
+    return rows.filter((d) => {
+      const h = d.header;
+      const source: string = (h as any).extra?.source || "";
+
+      if (f.entry_date_from && h.entry_date < f.entry_date_from) return false;
+      if (f.entry_date_to   && h.entry_date > f.entry_date_to)   return false;
+
+      if (f.source) {
+        const ok = (() => {
+          switch (f.source) {
+            case "manual":
+              return !source;
+            case "trade_docs":
+              return (
+                source === "trade_docs_sales" ||
+                source === "docs-tribut-ventas" ||
+                source === "trade_docs"
+              );
+            case "non_fiscal":
+              return (
+                source.startsWith("trade_docs_non") ||
+                source === "otros-docs-ingresos"
+              );
+            case "cobros":
+              return source === "cobros" || source.startsWith("cobros_");
+            case "import":
+              return source === "trade_doc_mass_import";
+            default:
+              return true;
+          }
+        })();
+        if (!ok) return false;
+      }
+
+      if (f.currency_code) {
+        if (h.currency_code !== f.currency_code.toUpperCase()) return false;
+      }
+
+      const cp = h.counterparty_id ? cpById[h.counterparty_id] : null;
+      if (f.counterparty_identifier) {
+        if (
+          !(cp?.identifier || "")
+            .toLowerCase()
+            .includes(f.counterparty_identifier.toLowerCase())
+        )
+          return false;
+      }
+      if (f.counterparty_name) {
+        if (
+          !(cp?.name || "")
+            .toLowerCase()
+            .includes(f.counterparty_name.toLowerCase())
+        )
+          return false;
+      }
+
+      if (f.description) {
+        if (
+          !(h.description || "")
+            .toLowerCase()
+            .includes(f.description.toLowerCase())
+        )
+          return false;
+      }
+
+      const sumD = d.lines.reduce((s, x) => s + Number(x.debit  || 0), 0);
+      const sumC = d.lines.reduce((s, x) => s + Number(x.credit || 0), 0);
+      if (!applyNumericFilter(sumD, f.debit_filter))  return false;
+      if (!applyNumericFilter(sumC, f.credit_filter)) return false;
+
+      return true;
+    });
+  }
+
+  const filteredDrafts = useMemo(
+    () => filterRows(drafts),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [drafts, filters, cpById]
+  );
+
+  const filteredRegistered = useMemo(
+    () => filterRows(registered),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [registered, filters, cpById]
+  );
 
   /**
    * =========================
@@ -487,8 +729,7 @@ export default function Page() {
     | "line_description"
     | "debit"
     | "credit"
-    | "counterparty_identifier"
-    | "line_reference";
+    | "counterparty_identifier";
 
   const mainCols: MainCol[] = [
     "account_code",
@@ -496,8 +737,18 @@ export default function Page() {
     "debit",
     "credit",
     "counterparty_identifier",
-    "line_reference",
   ];
+
+  // ── Infinite scroll ─────────────────────────────────────────────────────────
+  const PAGE_SIZE = 20;
+  const draftsOffsetRef         = useRef(0);
+  const registeredOffsetRef     = useRef(0);
+  const draftsSentinelRef       = useRef<HTMLTableRowElement | null>(null);
+  const registeredSentinelRef   = useRef<HTMLTableRowElement | null>(null);
+  const tableContainerRef       = useRef<HTMLDivElement | null>(null);
+  // Locks sincrónicos: evitan que dos llamadas concurrentes lean el mismo offset
+  const fetchingDraftsRef       = useRef(false);
+  const fetchingRegisteredRef   = useRef(false);
 
   const cellRefs = useRef<Record<string, HTMLElement | null>>({});
   const setCellRef =
@@ -744,8 +995,7 @@ export default function Page() {
       const hasAcc = !!l.account_code.trim();
       const hasDesc = !!l.line_description.trim();
       const hasCp = !!String(l.counterparty_identifier || "").trim();
-      const hasRef = !!String(l.line_reference || "").trim();
-      return hasAmount || hasAcc || hasDesc || hasCp || hasRef;
+      return hasAmount || hasAcc || hasDesc || hasCp;
     });
   }, [lines]);
 
@@ -774,7 +1024,7 @@ export default function Page() {
 
   function removeLine(idx: number) {
     const next = lines.filter((_, i) => i !== idx);
-    setLines(next.length ? renumber(next) : makeLines(20));
+    setLines(next.length ? renumber(next) : makeLines(10));
     setTimeout(() => focusCell(Math.max(0, idx - 1), "account_code"), 0);
   }
 
@@ -832,17 +1082,12 @@ export default function Page() {
     idx: number,
     field:
       | "counterparty_identifier"
-      | "line_reference"
       | "cost_center_code"
       | "business_line_code"
       | "branch_code"
-      | "item_code"
-      | "tax_code"
-      | "tax_rate"
   ) {
     const raw = normalizeCode((lines[idx] as any)?.[field]);
-    const val = field === "tax_rate" ? raw.replace(",", ".") : raw;
-    updateLine(idx, { [field]: val } as any);
+    updateLine(idx, { [field]: raw } as any);
   }
 
   /**
@@ -976,7 +1221,6 @@ export default function Page() {
       const cc = normalizeCode(l.cost_center_code);
       const cu = normalizeCode(l.business_line_code);
       const br = normalizeCode(l.branch_code);
-      const it = normalizeCode(l.item_code); // SKU
 
       if (reqCC) {
         if (!cc)
@@ -1058,70 +1302,6 @@ export default function Page() {
           field: "branch_code",
         });
       }
-
-      if (reqIT) {
-        if (!it)
-          out.push({
-            level: "error",
-            code: "ITEM_REQUIRED",
-            message: "Falta item_code (SKU).",
-            lineNo: ln,
-            field: "item_code",
-          });
-        else if (!itByCode[it])
-          out.push({
-            level: "error",
-            code: "ITEM_NOT_FOUND",
-            message: `Item no existe (SKU): "${it}"`,
-            lineNo: ln,
-            field: "item_code",
-          });
-      } else if (it && !itByCode[it]) {
-        out.push({
-          level: "warn",
-          code: "ITEM_NOT_FOUND",
-          message: `Item no existe (SKU): "${it}"`,
-          lineNo: ln,
-          field: "item_code",
-        });
-      }
-
-      // impuestos (UI/validación)
-      const txCode = normalizeCode(l.tax_code);
-      const tx = txCode ? taxByCode[txCode] : null;
-      const txRate = normalizeCode(l.tax_rate).replace(",", ".");
-      if (txCode && !tx) {
-        out.push({
-          level: "error",
-          code: "TAX_NOT_FOUND",
-          message: `Impuesto no existe: "${txCode}"`,
-          lineNo: ln,
-          field: "tax_code",
-        });
-      }
-      if (tx) {
-        if (!txRate) {
-          out.push({
-            level: "error",
-            code: "TAX_RATE_REQUIRED",
-            message: "Falta tax_rate.",
-            lineNo: ln,
-            field: "tax_rate",
-          });
-        } else {
-          const rates = taxRatesByTax[tx.id] || [];
-          const match = rates.find((r) => Number(r.rate) === Number(txRate));
-          if (!match) {
-            out.push({
-              level: "error",
-              code: "TAX_RATE_NOT_FOUND",
-              message: `Tasa no existe para ${txCode}: "${txRate}"`,
-              lineNo: ln,
-              field: "tax_rate",
-            });
-          }
-        }
-      }
     });
 
     return out;
@@ -1164,7 +1344,6 @@ export default function Page() {
   function downloadTemplate() {
     const fileName = "Formato_Asientos_Contables.xlsx";
     const url = `/templates/${encodeURIComponent(fileName)}`;
-
     const a = document.createElement("a");
     a.href = url;
     a.download = fileName;
@@ -1224,19 +1403,11 @@ export default function Page() {
     const cu = cuCode ? cuByCode[cuCode] : null;
     const br = brCode ? brByCode[brCode] : null;
 
-    // ✅ SKU (lo que escribe el usuario)
-    const itemSku = normalizeCode(l.item_code);
-    // ✅ convertir SKU -> UUID (items.id)
-    const item = itemSku ? itByCode[itemSku] : null;
-
     return {
       counterparty_id: cp?.id ?? null,
       cost_center_id: cc?.id ?? null,
       business_line_id: cu?.id ?? null,
       branch_id: br?.id ?? null,
-
-      // ✅ esto es lo correcto para DB (UUID)
-      item_id: item?.id ?? null,
     };
   }
 
@@ -1255,7 +1426,6 @@ export default function Page() {
       company_id: companyId,
       entry_date: header.entry_date,
       description: header.description.trim(),
-      reference: header.reference?.trim() || null,
       currency_code: header.currency_code,
       status: "DRAFT",
     };
@@ -1297,7 +1467,6 @@ export default function Page() {
         line_no: l.line_no,
         account_node_id: l.account_node_id,
         line_description: l.line_description?.trim() || null,
-        line_reference: l.line_reference?.trim() || null,
         debit: toNum(l.debit),
         credit: toNum(l.credit),
 
@@ -1305,7 +1474,6 @@ export default function Page() {
         cost_center_id: ids.cost_center_id,
         business_line_id: ids.business_line_id,
         branch_id: ids.branch_id,
-        item_id: ids.item_id,
       };
 
       return payload;
@@ -1403,10 +1571,9 @@ export default function Page() {
     setHeader({
       entry_date: todayISO(),
       description: "",
-      reference: "",
       currency_code: baseCurrency?.code || "CLP",
     });
-    setLines(makeLines(20));
+    setLines(makeLines(10));
     setIssues([]);
   }
 
@@ -1415,54 +1582,87 @@ export default function Page() {
    * Drafts list (ver/editar/eliminar)
    * =======================
    */
-  async function loadDrafts() {
+  async function loadDrafts(reset = true) {
     if (!companyId) return;
-    setLoadingDrafts(true);
+    // Lock sincrónico: evita llamadas concurrentes que leerían el mismo offset
+    if (fetchingDraftsRef.current) return;
+    fetchingDraftsRef.current = true;
+
+    if (reset) {
+      setLoadingDrafts(true);
+      draftsOffsetRef.current = 0;
+    } else {
+      setLoadingMoreDrafts(true);
+    }
+
+    const from = reset ? 0 : draftsOffsetRef.current;
+    const to   = from + PAGE_SIZE - 1;
+    // Reservar el rango ANTES del await para que llamadas concurrentes no lean el mismo offset
+    draftsOffsetRef.current = from + PAGE_SIZE;
+
     try {
       const { data: hs, error: he } = await supabase
         .from("journal_entries")
         .select(
-          "id,company_id,entry_date,description,reference,currency_code,status,created_at"
+          "id,company_id,entry_date,description,entry_number_formatted,counterparty_id,currency_code,status,created_at,extra"
         )
         .eq("company_id", companyId)
         .eq("status", "DRAFT")
-        .order("created_at", { ascending: false });
+        .order("created_at", { ascending: false })
+        .range(from, to);
 
       if (he) throw he;
 
       const headers = ((hs as any) || []) as DraftHeaderRow[];
+      setDraftsHasMore(headers.length === PAGE_SIZE);
+      // Corregir offset al valor real (por si llegaron menos de PAGE_SIZE)
+      draftsOffsetRef.current = from + headers.length;
 
-      // traer líneas de cada borrador
+      // Batch-fetch lines (una sola query)
       const results: DraftWithLines[] = [];
-      for (const h of headers.slice(0, 30)) {
-        const { data: ls, error: le } = await supabase
+      if (headers.length > 0) {
+        const headerIds = headers.map((h) => h.id);
+        const { data: allLines, error: le } = await supabase
           .from("journal_entry_lines")
           .select(
-            "line_no,account_node_id,line_description,line_reference,debit,credit,counterparty_id,cost_center_id,business_line_id,branch_id,item_id,journal_entry_id"
+            "line_no,account_node_id,line_description,debit,credit,counterparty_id,cost_center_id,business_line_id,branch_id,journal_entry_id"
           )
-          .eq("journal_entry_id", h.id)
+          .in("journal_entry_id", headerIds)
           .order("line_no", { ascending: true });
 
         if (le) throw le;
 
-        results.push({
-          header: h,
-          lines: ((ls as any) || []) as any,
-        });
+        const linesByEntry: Record<string, any[]> = {};
+        for (const l of ((allLines as any) || [])) {
+          if (!linesByEntry[l.journal_entry_id]) linesByEntry[l.journal_entry_id] = [];
+          linesByEntry[l.journal_entry_id].push(l);
+        }
+        for (const h of headers) {
+          results.push({ header: h, lines: linesByEntry[h.id] || [] });
+        }
       }
 
-      setDrafts(results);
+      if (reset) {
+        setDrafts(results);
+      } else {
+        setDrafts((prev) => {
+          // Deduplicar por si acaso: filtrar IDs ya presentes
+          const existingIds = new Set(prev.map((x) => x.header.id));
+          const fresh = results.filter((x) => !existingIds.has(x.header.id));
+          return [...prev, ...fresh];
+        });
+      }
     } catch (e: any) {
-      setIssues((prev) => [
-        {
-          level: "warn",
-          code: "DRAFTS_LOAD_FAILED",
-          message: e?.message || "No se pudieron cargar borradores.",
-        },
-        ...prev,
-      ]);
+      // En error, restaurar el offset al valor anterior para poder reintentar
+      draftsOffsetRef.current = from;
+      setPageMsg({
+        level: "error",
+        text: `Error al cargar borradores: ${e?.message || "Error desconocido"}`,
+      });
     } finally {
+      fetchingDraftsRef.current = false;
       setLoadingDrafts(false);
+      setLoadingMoreDrafts(false);
     }
   }
 
@@ -1472,6 +1672,300 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companyId]);
 
+  useEffect(() => {
+    if (!companyId || activeTab !== "registered") return;
+    loadRegistered();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId, activeTab]);
+
+  // ── Auto-fill: si el contenido no genera scrollbar, carga más ───────────────
+  useEffect(() => {
+    const el = tableContainerRef.current;
+    if (!el || loadingMoreDrafts || !draftsHasMore || activeTab !== "drafts") return;
+    if (el.scrollHeight <= el.clientHeight + 10) {
+      loadDrafts(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drafts, draftsHasMore, loadingMoreDrafts, activeTab]);
+
+  useEffect(() => {
+    const el = tableContainerRef.current;
+    if (!el || loadingMoreRegistered || !registeredHasMore || activeTab !== "registered") return;
+    if (el.scrollHeight <= el.clientHeight + 10) {
+      loadRegistered(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [registered, registeredHasMore, loadingMoreRegistered, activeTab]);
+
+  /**
+   * =======================
+   * Registrados list
+   * =======================
+   */
+  async function loadRegistered(reset = true) {
+    if (!companyId) return;
+    // Lock sincrónico: evita llamadas concurrentes que leerían el mismo offset
+    if (!reset && fetchingRegisteredRef.current) return;
+    fetchingRegisteredRef.current = true;
+
+    if (reset) {
+      setLoadingRegistered(true);
+      registeredOffsetRef.current = 0;
+    } else {
+      setLoadingMoreRegistered(true);
+    }
+
+    const from = reset ? 0 : registeredOffsetRef.current;
+    const to   = from + PAGE_SIZE - 1;
+    // Reservar el rango ANTES del await para que llamadas concurrentes no lean el mismo offset
+    registeredOffsetRef.current = from + PAGE_SIZE;
+
+    try {
+      const { data: hs, error: he } = await supabase
+        .from("journal_entries")
+        .select(
+          "id,company_id,entry_date,description,entry_number_formatted,counterparty_id,currency_code,status,created_at,extra"
+        )
+        .eq("company_id", companyId)
+        .eq("status", "POSTED")
+        .order("created_at", { ascending: false })
+        .range(from, to);
+
+      if (he) throw he;
+
+      const headers = ((hs as any) || []) as DraftHeaderRow[];
+      setRegisteredHasMore(headers.length === PAGE_SIZE);
+      // Corregir offset al valor real (por si llegaron menos de PAGE_SIZE)
+      registeredOffsetRef.current = from + headers.length;
+
+      // Batch-fetch lines (una sola query)
+      const results: DraftWithLines[] = [];
+      if (headers.length > 0) {
+        const headerIds = headers.map((h) => h.id);
+        const { data: allLines, error: le } = await supabase
+          .from("journal_entry_lines")
+          .select(
+            "line_no,account_node_id,line_description,debit,credit,counterparty_id,cost_center_id,business_line_id,branch_id,journal_entry_id"
+          )
+          .in("journal_entry_id", headerIds)
+          .order("line_no", { ascending: true });
+
+        if (le) throw le;
+
+        const linesByEntry: Record<string, any[]> = {};
+        for (const l of ((allLines as any) || [])) {
+          if (!linesByEntry[l.journal_entry_id]) linesByEntry[l.journal_entry_id] = [];
+          linesByEntry[l.journal_entry_id].push(l);
+        }
+        for (const h of headers) {
+          results.push({ header: h as DraftHeaderRow, lines: linesByEntry[h.id] || [] });
+        }
+      }
+
+      if (reset) {
+        setRegistered(results);
+      } else {
+        setRegistered((prev) => {
+          // Deduplicar por si acaso: filtrar IDs ya presentes
+          const existingIds = new Set(prev.map((x) => x.header.id));
+          const fresh = results.filter((x) => !existingIds.has(x.header.id));
+          return [...prev, ...fresh];
+        });
+      }
+    } catch (e: any) {
+      // En error, restaurar el offset al valor anterior para poder reintentar
+      registeredOffsetRef.current = from;
+      setPageMsg({ level: "error", text: e?.message || "No se pudieron cargar registros." });
+    } finally {
+      fetchingRegisteredRef.current = false;
+      setLoadingRegistered(false);
+      setLoadingMoreRegistered(false);
+    }
+  }
+
+  /**
+   * =======================
+   * Abrir asiento en modal (edit o view)
+   * =======================
+   */
+  async function openEntryInModal(id: string, readOnly: boolean) {
+    setModalReadOnly(readOnly);
+    try {
+      const { data: h, error: he } = await supabase
+        .from("journal_entries")
+        .select(
+          "id,company_id,entry_date,description,currency_code,status,extra"
+        )
+        .eq("company_id", companyId)
+        .eq("id", id)
+        .single();
+
+      if (he) throw he;
+
+      const { data: ls, error: le } = await supabase
+        .from("journal_entry_lines")
+        .select(
+          "line_no,account_node_id,line_description,debit,credit,counterparty_id,cost_center_id,business_line_id,branch_id,journal_entry_id"
+        )
+        .eq("journal_entry_id", id)
+        .order("line_no", { ascending: true });
+
+      if (le) throw le;
+
+      setEntryId(id);
+      setHeader({
+        entry_date: (h as any).entry_date,
+        description: (h as any).description || "",
+        currency_code:
+          (h as any).currency_code || (baseCurrency?.code || "CLP"),
+      });
+
+      const parsed: EntryLine[] = (((ls as any) || []) as any[]).map((r) => {
+        const acc = r.account_node_id ? accById[r.account_node_id] : null;
+        const cp = r.counterparty_id ? cpById[r.counterparty_id] : null;
+        const cc = r.cost_center_id ? ccById[r.cost_center_id] : null;
+        const cu = r.business_line_id ? cuById[r.business_line_id] : null;
+        const br = r.branch_id ? brById[r.branch_id] : null;
+
+        return {
+          ...makeLine(Number(r.line_no) || 1),
+          account_node_id: r.account_node_id ?? null,
+          account_code: acc?.code ?? "",
+          account_name: acc?.name ?? "",
+          line_description: r.line_description ?? "",
+          debit:
+            r.debit != null && Number(r.debit) > 0 ? String(r.debit) : "",
+          credit:
+            r.credit != null && Number(r.credit) > 0 ? String(r.credit) : "",
+          counterparty_identifier: cp?.identifier ?? "",
+          counterparty_name_resolved: cp?.name ?? "",
+          cost_center_code: cc?.code ?? "",
+          business_line_code: cu?.code ?? "",
+          branch_code: br?.code ?? "",
+          details_open: false,
+          cellErrors: {},
+        } as EntryLine;
+      });
+
+      const normalized = renumber(parsed);
+      const filled =
+        normalized.length >= 10
+          ? normalized
+          : [...normalized, ...makeLines(10 - normalized.length)].map(
+              (x, i) => ({ ...x, line_no: i + 1 })
+            );
+
+      setLines(filled);
+      setIssues([]);
+      setEditorOpen(true);
+    } catch (e: any) {
+      setPageMsg({
+        level: "error",
+        text: e?.message || "No se pudo abrir el asiento.",
+      });
+    }
+  }
+
+  /**
+   * =======================
+   * Expand row + carga doc origen
+   * =======================
+   */
+  async function toggleExpandRow(id: string, extra: any) {
+    if (expandedId === id) {
+      setExpandedId(null);
+      return;
+    }
+    setExpandedId(id);
+    if (
+      extra?.source &&
+      extra.source !== "manual" &&
+      !Object.prototype.hasOwnProperty.call(sourceDocMap, id)
+    ) {
+      await loadSourceDoc(id, extra);
+    }
+  }
+
+  /** Cualquier variante de cobros: "cobros", "cobros_import", "cobros_import_batch", … */
+  function isCobrosSource(src?: string) {
+    return !!src && (src === "cobros" || src.startsWith("cobros_") || src === "cobros");
+  }
+  /** Variantes de trade_docs: docs tributarios y otros ingresos */
+  function isTradeDocSource(src?: string) {
+    return !!src && (
+      src.startsWith("trade_docs") ||   // trade_docs_sales, trade_docs_non_fiscal, trade_docs_non_fiscal_cancel, ...
+      src === "docs-tribut-ventas" ||   // valor legacy
+      src === "otros-docs-ingresos"     // valor legacy
+    );
+  }
+
+  async function loadSourceDoc(entryId: string, extra: any) {
+    try {
+      if (isCobrosSource(extra?.source) && extra?.cobro_id) {
+        const { data } = await supabase
+          .from("payments")
+          .select(
+            "id,payment_date,total_amount,currency_code,status,counterparty_name_snapshot,counterparty_identifier_snapshot,description"
+          )
+          .eq("id", extra.cobro_id)
+          .maybeSingle();
+        setSourceDocMap((m) => ({ ...m, [entryId]: (data as any) || null }));
+      } else if (
+        isTradeDocSource(extra?.source) &&
+        (extra?.trade_doc_id || extra?.other_doc_id)
+      ) {
+        const docId = extra.trade_doc_id || extra.other_doc_id;
+        const { data } = await supabase
+          .from("trade_docs")
+          .select(
+            "id,issue_date,grand_total,currency_code,status,doc_type,doc_class,counterparty_name_snapshot,counterparty_identifier_snapshot,description"
+          )
+          .eq("id", docId)
+          .maybeSingle();
+        setSourceDocMap((m) => ({ ...m, [entryId]: (data as any) || null }));
+      } else {
+        setSourceDocMap((m) => ({ ...m, [entryId]: null }));
+      }
+    } catch {
+      setSourceDocMap((m) => ({ ...m, [entryId]: null }));
+    }
+  }
+
+  /**
+   * =======================
+   * Sincronizar módulo origen tras contabilizar
+   * =======================
+   */
+  async function syncSourceAfterPost(extra: any) {
+    if (!extra) return;
+    try {
+      if (isCobrosSource(extra.source) && extra.cobro_id) {
+        await supabase
+          .from("payments")
+          .update({ status: "VIGENTE" })
+          .eq("id", extra.cobro_id)
+          .eq("company_id", companyId);
+      } else if (
+        (extra.source === "docs-tribut-ventas" || extra.source === "trade_docs") &&
+        extra.trade_doc_id
+      ) {
+        await supabase
+          .from("trade_docs")
+          .update({ status: "VIGENTE" })
+          .eq("id", extra.trade_doc_id)
+          .eq("company_id", companyId);
+      } else if (extra.source === "otros-docs-ingresos" && extra.other_doc_id) {
+        await supabase
+          .from("trade_docs")
+          .update({ status: "VIGENTE" })
+          .eq("id", extra.other_doc_id)
+          .eq("company_id", companyId);
+      }
+    } catch {
+      // la contabilización fue exitosa; el sync falla silenciosamente
+    }
+  }
+
   async function openDraft(draftId: string) {
     if (!companyId) return;
 
@@ -1479,7 +1973,7 @@ export default function Page() {
       const { data: h, error: he } = await supabase
         .from("journal_entries")
         .select(
-          "id,company_id,entry_date,description,reference,currency_code,status"
+          "id,company_id,entry_date,description,entry_number_formatted,counterparty_id,currency_code,status"
         )
         .eq("company_id", companyId)
         .eq("id", draftId)
@@ -1490,7 +1984,7 @@ export default function Page() {
       const { data: ls, error: le } = await supabase
         .from("journal_entry_lines")
         .select(
-          "line_no,account_node_id,line_description,line_reference,debit,credit,counterparty_id,cost_center_id,business_line_id,branch_id,item_id,journal_entry_id"
+          "line_no,account_node_id,line_description,debit,credit,counterparty_id,cost_center_id,business_line_id,branch_id,journal_entry_id"
         )
         .eq("journal_entry_id", draftId)
         .order("line_no", { ascending: true });
@@ -1501,7 +1995,6 @@ export default function Page() {
       setHeader({
         entry_date: (h as any).entry_date,
         description: (h as any).description || "",
-        reference: (h as any).reference || "",
         currency_code: (h as any).currency_code || (baseCurrency?.code || "CLP"),
       });
 
@@ -1512,8 +2005,6 @@ export default function Page() {
         const cc = r.cost_center_id ? ccById[r.cost_center_id] : null;
         const cu = r.business_line_id ? cuById[r.business_line_id] : null;
         const br = r.branch_id ? brById[r.branch_id] : null;
-        
-        const item = r.item_id ? (itById[r.item_id] ?? null) : null;
 
         return {
           ...makeLine(Number(r.line_no) || 1),
@@ -1526,11 +2017,9 @@ export default function Page() {
             r.credit != null && Number(r.credit) > 0 ? String(r.credit) : "",
           counterparty_identifier: cp?.identifier ?? "",
           counterparty_name_resolved: cp?.name ?? "",
-          line_reference: r.line_reference ?? "",
           cost_center_code: cc?.code ?? "",
           business_line_code: cu?.code ?? "",
           branch_code: br?.code ?? "",
-          item_code: item?.code ?? "",
           details_open: false,
           cellErrors: {},
         } as EntryLine;
@@ -1538,9 +2027,9 @@ export default function Page() {
 
       const normalized = renumber(parsed);
       const filled =
-        normalized.length >= 20
+        normalized.length >= 10
           ? normalized
-          : [...normalized, ...makeLines(20 - normalized.length)].map((x, i) => ({
+          : [...normalized, ...makeLines(10 - normalized.length)].map((x, i) => ({
               ...x,
               line_no: i + 1,
             }));
@@ -1641,11 +2130,18 @@ export default function Page() {
     if (!canEdit) return;
     setPosting(true);
     try {
+      const draft = drafts.find((d) => d.header.id === draftId);
+      const extra = (draft?.header as any)?.extra;
+
       const { error } = await supabase.rpc("post_journal_entry", {
         _entry_id: draftId,
       });
       if (error) throw error;
+
+      if (extra) await syncSourceAfterPost(extra);
+
       await loadDrafts();
+      if (activeTab === "registered") await loadRegistered();
 
       setIssues((prev) => [
         {
@@ -1655,6 +2151,8 @@ export default function Page() {
         },
         ...prev,
       ]);
+      setPageMsg({ level: "success", text: "Asiento contabilizado correctamente." });
+      setTimeout(() => setPageMsg(null), 4000);
     } catch (e: any) {
       setIssues([
         {
@@ -1708,6 +2206,8 @@ export default function Page() {
             _entry_id: d.header.id,
           });
           if (error) throw error;
+          const extra = (d.header as any)?.extra;
+          if (extra) await syncSourceAfterPost(extra);
           posted += 1;
         } catch (e: any) {
           failed.push(`${d.header.id.slice(0, 8)}…: ${e?.message || "error"}`);
@@ -1715,6 +2215,7 @@ export default function Page() {
       }
 
       await loadDrafts();
+      if (activeTab === "registered") await loadRegistered();
 
       setIssues((prev) => [
         {
@@ -1823,6 +2324,71 @@ export default function Page() {
     }
   }
 
+  // ── Reporte Excel ─────────────────────────────────────────────────────────
+  function downloadReport() {
+    const rows = activeTab === "drafts" ? filteredDrafts : filteredRegistered;
+
+    const isFiscalSrc = (src: string) =>
+      src === "trade_docs_sales" ||
+      src === "docs-tribut-ventas" ||
+      src === "trade_docs";
+    const isNonFiscalSrc = (src: string) =>
+      src.startsWith("trade_docs_non") || src === "otros-docs-ingresos";
+    const isCobrosSrc = (src: string) =>
+      src === "cobros" || src.startsWith("cobros_");
+
+    const header = [
+      "Fecha",
+      "N° Diario",
+      "RUT / NIC",
+      "Nombre Contraparte",
+      "Descripción",
+      "Moneda",
+      "Debe",
+      "Haber",
+      "Estado",
+      "Origen",
+    ];
+
+    const dataRows = rows.map((d) => {
+      const h = d.header;
+      const src: string = (h as any).extra?.source || "";
+      const cp = h.counterparty_id ? cpById[h.counterparty_id] : null;
+      const sumD = d.lines.reduce((s, x) => s + Number(x.debit  || 0), 0);
+      const sumC = d.lines.reduce((s, x) => s + Number(x.credit || 0), 0);
+      const originLabel = isCobrosSrc(src)
+        ? "Cobro"
+        : isFiscalSrc(src)
+        ? "Doc Tributario"
+        : isNonFiscalSrc(src)
+        ? "Otro Ingreso"
+        : src === "trade_doc_mass_import"
+        ? "Importación masiva"
+        : "Manual";
+
+      return [
+        h.entry_date,
+        h.entry_number_formatted || "",
+        cp?.identifier || "",
+        cp?.name || "",
+        h.description,
+        h.currency_code,
+        sumD,
+        sumC,
+        h.status === "DRAFT" ? "Borrador" : "Contabilizado",
+        originLabel,
+      ];
+    });
+
+    const ws = XLSX.utils.aoa_to_sheet([header, ...dataRows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Asientos");
+    XLSX.writeFile(
+      wb,
+      `asientos_${activeTab}_${new Date().toISOString().slice(0, 10)}.xlsx`
+    );
+  }
+
   /**
    * =======================
    * Excel -> BORRADORES (multi entry_key)
@@ -1846,12 +2412,11 @@ export default function Page() {
     const c = toNum(r.credit);
     const desc = String(r.line_description ?? "").trim();
     const cp = normalizeCode(r.counterparty_identifier);
-    const ref = String(r.line_reference ?? "").trim();
     const headerish =
       normalizeCode(r.entry_date) ||
       normalizeCode(r.description) ||
       normalizeCode(r.num_doc);
-    return !headerish && !acc && d <= 0 && c <= 0 && !desc && !cp && !ref;
+    return !headerish && !acc && d <= 0 && c <= 0 && !desc && !cp;
   }
 
   function validateEntryExternal(
@@ -1866,8 +2431,7 @@ export default function Page() {
       const hasAcc = !!l.account_code.trim();
       const hasDesc = !!l.line_description.trim();
       const hasCp = !!String(l.counterparty_identifier || "").trim();
-      const hasRef = !!String(l.line_reference || "").trim();
-      return hasAmount || hasAcc || hasDesc || hasCp || hasRef;
+      return hasAmount || hasAcc || hasDesc || hasCp;
     });
 
     const debit = used.reduce((s, l) => s + toNum(l.debit), 0);
@@ -2004,7 +2568,6 @@ export default function Page() {
       const cc = normalizeCode(l.cost_center_code);
       const cu = normalizeCode(l.business_line_code);
       const br = normalizeCode(l.branch_code);
-      const it = normalizeCode(l.item_code);
 
       if (reqCC) {
         if (!cc)
@@ -2086,70 +2649,6 @@ export default function Page() {
           field: "branch_code",
         });
       }
-
-      if (reqIT) {
-        if (!it)
-          out.push({
-            level: "error",
-            code: "ITEM_REQUIRED",
-            message: "Falta item_code (SKU).",
-            lineNo: ln,
-            field: "item_code",
-          });
-        else if (!itByCode[it])
-          out.push({
-            level: "error",
-            code: "ITEM_NOT_FOUND",
-            message: `Item no existe (SKU): "${it}"`,
-            lineNo: ln,
-            field: "item_code",
-          });
-      } else if (it && !itByCode[it]) {
-        out.push({
-          level: "warn",
-          code: "ITEM_NOT_FOUND",
-          message: `Item no existe (SKU): "${it}"`,
-          lineNo: ln,
-          field: "item_code",
-        });
-      }
-
-      // impuestos (validación)
-      const txCode = normalizeCode(l.tax_code);
-      const tx = txCode ? taxByCode[txCode] : null;
-      const txRate = normalizeCode(l.tax_rate).replace(",", ".");
-      if (txCode && !tx) {
-        out.push({
-          level: "error",
-          code: "TAX_NOT_FOUND",
-          message: `Impuesto no existe: "${txCode}"`,
-          lineNo: ln,
-          field: "tax_code",
-        });
-      }
-      if (tx) {
-        if (!txRate) {
-          out.push({
-            level: "error",
-            code: "TAX_RATE_REQUIRED",
-            message: "Falta tax_rate.",
-            lineNo: ln,
-            field: "tax_rate",
-          });
-        } else {
-          const rates = taxRatesByTax[tx.id] || [];
-          const match = rates.find((r) => Number(r.rate) === Number(txRate));
-          if (!match) {
-            out.push({
-              level: "error",
-              code: "TAX_RATE_NOT_FOUND",
-              message: `Tasa no existe para ${txCode}: "${txRate}"`,
-              lineNo: ln,
-              field: "tax_rate",
-            });
-          }
-        }
-      }
     });
 
     return out;
@@ -2160,11 +2659,6 @@ export default function Page() {
     const ws = wb.Sheets[sheetName];
     const rows = XLSX.utils.sheet_to_json(ws, { defval: "", range: 2 }) as any[];
     // range: 2 => arranca en la fila 3 (0-index), donde están los headers reales
-
-    console.log("sheetName:", sheetName);
-    console.log("rows length:", rows.length);
-    console.log("first row keys:", rows[0] ? Object.keys(rows[0]) : "no rows");
-    console.log("first row sample:", rows[0]);
 
 
     const groups: Record<string, any[]> = {};
@@ -2184,12 +2678,10 @@ export default function Page() {
 
       const entry_date = excelDateToISO(first.entry_date) || todayISO();
       const description = String(first.description ?? "").trim();
-      const reference = String(first.num_doc ?? "").trim();
 
       const hdr: EntryHeader = {
         entry_date,
         description,
-        reference,
         currency_code: baseCurrency?.code || header.currency_code || "CLP",
       };
 
@@ -2219,13 +2711,9 @@ export default function Page() {
           credit: String(r.credit ?? "").trim(),
           counterparty_identifier: cpIdent,
           counterparty_name_resolved: cp?.name ?? "",
-          line_reference: String(r.line_reference ?? "").trim(),
           cost_center_code: normalizeCode(r.cost_center_code),
           business_line_code: normalizeCode(r.business_line_code),
           branch_code: normalizeCode(r.branch_code),
-          item_code: normalizeCode(r.item_code),
-          tax_code: normalizeCode(r.tax_code),
-          tax_rate: String(r.tax_rate ?? "").trim(),
           details_open: false,
           cellErrors: {},
         });
@@ -2255,9 +2743,9 @@ export default function Page() {
       company_id: companyId,
       entry_date: e.header.entry_date,
       description: e.header.description.trim(),
-      reference: e.header.reference?.trim() || null,
       currency_code: e.header.currency_code,
       status: "DRAFT",
+      extra: { source: "asientos_import" },
     };
 
     const { data: h, error: he } = await supabase
@@ -2274,8 +2762,7 @@ export default function Page() {
       const hasAcc = !!l.account_code.trim();
       const hasDesc = !!l.line_description.trim();
       const hasCp = !!String(l.counterparty_identifier || "").trim();
-      const hasRef = !!String(l.line_reference || "").trim();
-      return hasAmount || hasAcc || hasDesc || hasCp || hasRef;
+      return hasAmount || hasAcc || hasDesc || hasCp;
     });
 
     const linePayloads = used.map((l) => {
@@ -2286,14 +2773,12 @@ export default function Page() {
         line_no: l.line_no,
         account_node_id: l.account_node_id,
         line_description: l.line_description?.trim() || null,
-        line_reference: l.line_reference?.trim() || null,
         debit: toNum(l.debit),
         credit: toNum(l.credit),
         counterparty_id: ids.counterparty_id,
         cost_center_id: ids.cost_center_id,
         business_line_id: ids.business_line_id,
         branch_id: ids.branch_id,
-        item_id: ids.item_id,
       };
     });
 
@@ -2407,6 +2892,120 @@ export default function Page() {
 
   }
 
+  // ── Flujo del modal de importación ──────────────────────────────────────
+
+  function openImportModal() {
+    setImportOpen(true);
+    setImportParsedEntries([]);
+    setImportPreviewRows([]);
+    setImportModalIssues([]);
+    setImportState("idle");
+  }
+
+  async function handlePickExcelForModal(file: File) {
+    setImportState("reading");
+    setImportParsedEntries([]);
+    setImportPreviewRows([]);
+    setImportModalIssues([]);
+
+    try {
+      const reader = new FileReader();
+      const result = await new Promise<{ entries: ExcelEntryParsed[] }>(
+        (resolve, reject) => {
+          reader.onload = (ev) => {
+            try {
+              setImportState("parsing");
+              const data = new Uint8Array(ev.target?.result as ArrayBuffer);
+              const wb = XLSX.read(data, { type: "array", cellDates: true });
+              const entries = parseExcelToEntries(wb);
+              resolve({ entries });
+            } catch (err: any) {
+              reject(err);
+            }
+          };
+          reader.onerror = () => reject(new Error("No se pudo leer el archivo."));
+          reader.readAsArrayBuffer(file);
+        }
+      );
+
+      setImportState("validating");
+
+      if (result.entries.length === 0) {
+        setImportModalIssues([
+          { level: "error", code: "EXCEL_EMPTY", message: "El Excel no trae filas válidas en la hoja PLANTILLA." },
+        ]);
+        setImportState("idle");
+        return;
+      }
+
+      const allIssues: AsientosImportIssue[] = [];
+      for (const e of result.entries) {
+        const v = validateEntryExternal(e.header, e.lines, false);
+        for (const x of v.filter((x) => x.level === "error")) {
+          const line = e.lines.find((l) => l.line_no === x.lineNo);
+          allIssues.push({
+            level: "error",
+            code: `EXCEL_${x.code}`,
+            message: `entry_key=${e.entry_key} • ${
+              line?.excel_row ? `fila_excel=${line.excel_row} • ` : ""
+            }${x.message}`,
+          });
+        }
+      }
+
+      setImportModalIssues(allIssues.slice(0, 200));
+
+      if (allIssues.length === 0) {
+        setImportParsedEntries(result.entries);
+        setImportPreviewRows(
+          result.entries.map((e) => ({
+            entry_key: e.entry_key,
+            entry_date: e.header.entry_date,
+            description: e.header.description,
+            lines_count: e.lines.length,
+            currency_code: e.header.currency_code || baseCurrency?.code || "CLP",
+          }))
+        );
+      }
+
+      setImportState("idle");
+    } catch (err: any) {
+      setImportModalIssues([
+        { level: "error", code: "EXCEL_PARSE_FAILED", message: err?.message || "No se pudo procesar el archivo." },
+      ]);
+      setImportState("idle");
+    }
+  }
+
+  async function confirmImportFromModal() {
+    if (!canEdit || importParsedEntries.length === 0) return;
+    setSavingDraft(true);
+    setImportState("saving");
+    let ok = 0;
+    try {
+      for (const e of importParsedEntries) {
+        await createDraftFromEntryParsed(e);
+        ok++;
+      }
+      await loadDrafts();
+      setImportOpen(false);
+      setImportParsedEntries([]);
+      setImportPreviewRows([]);
+      setImportModalIssues([]);
+      setPageMsg({
+        level: "success",
+        text: `Importación completada: ${ok} borrador${ok !== 1 ? "es" : ""} creado${ok !== 1 ? "s" : ""}.`,
+      });
+    } catch (err: any) {
+      setImportModalIssues([
+        { level: "error", code: "EXCEL_IMPORT_FAILED", message: err?.message || "Error al guardar los borradores." },
+      ]);
+    } finally {
+      setSavingDraft(false);
+      setImportState("idle");
+    }
+  }
+
   /**
    * =======================
    * UI helpers
@@ -2461,1113 +3060,1521 @@ export default function Page() {
   }
 
   return (
-    <div className="p-6 space-y-4">
-      {/* Sticky top bar */}
-      <div className="top-3 z-20">
-        <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b">
-            <div className="flex flex-wrap items-start justify-between gap-2">
-              <div>
-                <h1 className="text-xl font-semibold text-slate-900">
-                  Asientos Contables
-                </h1>
+    <div className="p-6">
 
-                <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-700">
-                  <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5">
-                    Moneda: <b className="ml-1">{header.currency_code}</b>
-                  </span>
+      {/* ═══════════════════════════════════════════════════════════
+          MODAL EDITOR DE ASIENTO
+      ════════════════════════════════════════════════════════════ */}
+      {editorOpen && (
+        <div className="fixed inset-0 z-50 bg-black/45">
+          <div className="absolute inset-0" onClick={() => { setEditorOpen(false); setModalReadOnly(false); }} />
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(1200px,96vw)]">
+            <div className="flex h-[min(84vh,780px)] flex-col overflow-hidden rounded-[22px] bg-white shadow-xl ring-1 ring-black/5">
 
-                  <span
-                    className={cls(
-                      "inline-flex items-center rounded-full px-2 py-0.5",
-                      Math.abs(totals.diff) <= postingTolerance
-                        ? "bg-emerald-100 text-emerald-800"
-                        : "bg-rose-100 text-rose-800"
-                    )}
+              {/* Modal header fijo */}
+              <div className="relative shrink-0 bg-gradient-to-r from-[#0b2b4f] via-[#123b63] to-[#0b2b4f] px-5 py-4 text-white">
+                <div className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
+                <div className="pointer-events-none absolute -bottom-24 -left-24 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
+                <div className="relative flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-extrabold uppercase text-white/80">
+                      Gestión Contable •{" "}
+                      {modalReadOnly ? "Consulta" : entryId ? "Editor" : "Nuevo"}
+                    </div>
+                    <h2 className="truncate text-lg font-black text-white">
+                      {modalReadOnly
+                        ? "Ver Asiento"
+                        : entryId
+                        ? "Editar Asiento"
+                        : "Nuevo Asiento"}
+                    </h2>
+                  </div>
+                  <button
+                    type="button"
+                    className="ml-3 rounded-xl px-3 py-1.5 text-sm font-extrabold text-white/90 hover:bg-white/10"
+                    onClick={() => { setEditorOpen(false); setModalReadOnly(false); }}
+                    title="Cerrar"
                   >
-                    Diff:{" "}
-                    <b className="ml-1">
-                      {formatNumber(totals.diff, moneyDecimals)}
-                    </b>
-                  </span>
-
-                  <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5">
-                    Tol:{" "}
-                    <b className="ml-1">
-                      {formatNumber(postingTolerance, moneyDecimals)}
-                    </b>
-                  </span>
-
-                  <span
-                    className={cls(
-                      "inline-flex items-center rounded-full px-2 py-0.5",
-                      errorCount
-                        ? "bg-rose-100 text-rose-800"
-                        : "bg-emerald-100 text-emerald-800"
-                    )}
-                  >
-                    Errores: <b className="ml-1">{errorCount}</b>
-                  </span>
-
-                  {warnCount ? (
-                    <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">
-                      Avisos: <b className="ml-1">{warnCount}</b>
-                    </span>
-                  ) : null}
-
-                  {entryId ? (
-                    <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5">
-                      Draft ID: <b className="ml-1">{entryId.slice(0, 8)}…</b>
-                    </span>
-                  ) : null}
+                    ✕
+                  </button>
                 </div>
               </div>
 
-              <div className="flex flex-wrap gap-2">
-                <button
-                  className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50"
-                  onClick={downloadTemplate}
-                >
-                  Descargar Excel
-                </button>
-                
-                <button
-                  className={cls(
-                    "rounded-lg border px-3 py-2 text-sm",
-                    !canEdit ? "opacity-60 cursor-not-allowed" : "hover:bg-slate-50"
-                  )}
-                  disabled={!canEdit || savingDraft}
-                  onClick={() => fileRef.current?.click()}
-                  title="Importa uno o varios asientos (entry_key) directo a BORRADORES"
-                >
-                  {savingDraft
-                    ? importState === "reading"
-                      ? "Leyendo Excel..."
-                      : importState === "parsing"
-                      ? "Analizando Excel..."
-                      : importState === "validating"
-                      ? "Validando..."
-                      : importState === "saving"
-                      ? "Guardando..."
-                      : "Procesando..."
-                    : "Importar Excel"}
-                </button>
-
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept=".xlsx,.xls"
-                  className="hidden"
-                  onChange={async (e) => {
-                    const input = e.currentTarget;        // ✅ capturar el elemento
-                    const f = input.files?.[0];           // ✅ leer desde el mismo input
-                    if (!f) return;
-
-                    try {
-                      if (!canEdit) return;
-
-                      setImportState("reading");          // ✅ nuevo (ver B)
-                      setSavingDraft(true);
-
-                      await importExcelToDrafts(f);       // tu función
-
-                    } catch (err: any) {
-                      setIssues([
-                        {
-                          level: "error",
-                          code: "EXCEL_IMPORT_FAILED",
-                          message: err?.message || "No se pudo importar el Excel.",
-                        },
-                      ]);
-                    } finally {
-                      setSavingDraft(false);
-                      setImportState("idle");             // ✅ nuevo (ver B)
-                      // ✅ reset seguro (sin usar e después del await)
-                      input.value = "";
-                    }
-                  }}
-                />
-
-
-                <button
-                  className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50"
-                  onClick={() => runValidate(true)}
-                >
-                  Validar
-                </button>
-
-                <button
-                  className={cls(
-                    "rounded-lg border px-3 py-2 text-sm",
-                    !canEdit ? "opacity-60 cursor-not-allowed" : "hover:bg-slate-50"
-                  )}
-                  disabled={!canEdit || savingDraft}
-                  onClick={onSaveDraftClick}
-                  title="Guarda como borrador (permite no cuadrar, pero no permite errores)"
-                >
-                  {savingDraft ? "Guardando..." : "Guardar borrador"}
-                </button>
-
-                <button
-                  className={cls(
-                    "rounded-lg px-3 py-2 text-sm text-white",
-                    !canEdit || posting ? "bg-slate-400" : "bg-slate-900 hover:bg-slate-800"
-                  )}
-                  disabled={!canEdit || posting}
-                  onClick={onPostClick}
-                  title="Valida y contabiliza (requiere cuadrar)"
-                >
-                  {posting ? "Contabilizando..." : "Contabilizar"}
-                </button>
-
-                <button
-                  className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50"
-                  onClick={resetNew}
-                >
-                  Limpiar
-                </button>
-              </div>
-            </div>
-
-            {!counterpartiesAvailable && (
-              <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 p-2 text-sm text-amber-900">
-                ⚠️ Tabla de terceros no disponible. No se puede resolver nombre.
-              </div>
-            )}
-
-            {!canEdit && (
-              <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 p-2 text-sm text-amber-900">
-                Modo solo lectura (role: {role || "—"}).
-              </div>
-            )}
-          </div>
-
-          {/* Mensajes arriba */}
-          {issues.length > 0 ? (
-            <div className="px-4 py-3 border-b bg-slate-50">
-              <div className="space-y-1">
-                {issues.slice(0, 10).map((x, i) => (
-                  <div
-                    key={i}
-                    className={cls(
-                      "rounded-md border px-2 py-1 text-sm",
-                      x.level === "error"
-                        ? "border-rose-200 bg-rose-50 text-rose-900"
-                        : "border-amber-200 bg-amber-50 text-amber-900"
+              {/* Mensajes */}
+              {issues.length > 0 && (
+                <div className="shrink-0 px-4 py-2 border-b bg-slate-50">
+                  <div className="space-y-1">
+                    {issues.slice(0, 8).map((x, i) => (
+                      <div
+                        key={i}
+                        className={cls(
+                          "rounded-md border px-2 py-1 text-sm",
+                          x.level === "error"
+                            ? "border-rose-200 bg-rose-50 text-rose-900"
+                            : "border-amber-200 bg-amber-50 text-amber-900"
+                        )}
+                      >
+                        <b>{x.level === "error" ? "Error" : "Aviso"}</b> •{" "}
+                        {x.code}
+                        {x.lineNo ? (
+                          <span className="ml-2 text-xs opacity-80">
+                            line_no={x.lineNo}
+                          </span>
+                        ) : null}
+                        <div className="text-sm">{x.message}</div>
+                      </div>
+                    ))}
+                    {issues.length > 8 && (
+                      <div className="text-xs text-slate-600">
+                        +{issues.length - 8} más…
+                      </div>
                     )}
-                  >
-                    <b>{x.level === "error" ? "Error" : "Aviso"}</b> • {x.code}
-                    {x.lineNo ? (
-                      <span className="ml-2 text-xs opacity-80">
-                        line_no={x.lineNo}
-                      </span>
-                    ) : null}
-                    <div className="text-sm">{x.message}</div>
                   </div>
-                ))}
-                {issues.length > 10 ? (
-                  <div className="text-xs text-slate-600">
-                    Mostrando 10 mensajes.
+                </div>
+              )}
+
+              {/* Cabecera */}
+              <div className="shrink-0 px-4 py-3 border-b grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div>
+                  <label className="text-xs text-slate-700 font-semibold">
+                    Fecha del asiento
+                  </label>
+                  <div className="text-[11px] text-slate-500">entry_date</div>
+                  <input
+                    type="date"
+                    className="mt-1 w-full rounded-xl border border-slate-300 px-2 py-2 text-sm focus:border-[#123b63] focus:ring-1 focus:ring-[#123b63]/20 outline-none"
+                    value={header.entry_date}
+                    disabled={!canEdit || modalReadOnly}
+                    onChange={(e) =>
+                      setHeader((h) => ({ ...h, entry_date: e.target.value }))
+                    }
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="text-xs text-slate-700 font-semibold">
+                    Descripción general
+                  </label>
+                  <div className="text-[11px] text-slate-500">description</div>
+                  <input
+                    className="mt-1 w-full rounded-xl border border-slate-300 px-2 py-2 text-sm focus:border-[#123b63] focus:ring-1 focus:ring-[#123b63]/20 outline-none"
+                    placeholder="Ej: Pago proveedor, Ajuste, Nómina..."
+                    value={header.description}
+                    disabled={!canEdit || modalReadOnly}
+                    onChange={(e) =>
+                      setHeader((h) => ({
+                        ...h,
+                        description: e.target.value,
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+
+              {/* Líneas */}
+              <div className="flex flex-col flex-1 overflow-hidden">
+                <div className="shrink-0 px-4 py-2 border-b flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="font-semibold text-slate-900">Líneas</h3>
+                    <div className="text-[11px] text-slate-500">
+                      Enter avanza • Shift+Enter retrocede • ↑/↓ cambia de fila
+                      • Ctrl+Enter abre/cierra detalles
+                    </div>
                   </div>
-                ) : null}
+                  <div className="flex items-center gap-3">
+                    <div className="text-sm text-slate-700">
+                      <b>debit:</b> {formatNumber(totals.debit, moneyDecimals)}{" "}
+                      <span className="mx-2 text-slate-300">|</span>{" "}
+                      <b>credit:</b>{" "}
+                      {formatNumber(totals.credit, moneyDecimals)}
+                    </div>
+                    {!modalReadOnly && (
+                      <button
+                        className={cls(
+                          "rounded-lg bg-[#123b63] px-3 py-2 text-sm text-white hover:bg-[#0f3354] transition",
+                          !canEdit ? "opacity-60 cursor-not-allowed" : ""
+                        )}
+                        disabled={!canEdit}
+                        onClick={() => addMoreLines(10)}
+                      >
+                        + 10 líneas
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Datalists */}
+                <datalist id="dl-accounts">
+                  {accounts.map((a) => (
+                    <option key={a.id} value={a.code}>
+                      {a.name}
+                    </option>
+                  ))}
+                </datalist>
+                <datalist id="dl-cc">
+                  {costCenters.map((x) => (
+                    <option key={x.id} value={x.code}>
+                      {x.name}
+                    </option>
+                  ))}
+                </datalist>
+                <datalist id="dl-cu">
+                  {businessLines.map((x) => (
+                    <option key={x.id} value={x.code}>
+                      {x.name}
+                    </option>
+                  ))}
+                </datalist>
+                <datalist id="dl-br">
+                  {branches.map((x) => (
+                    <option key={x.id} value={x.code}>
+                      {x.name}
+                    </option>
+                  ))}
+                </datalist>
+                {/* Cabecera fija de columnas */}
+                <div className="shrink-0 border-t border-slate-200 overflow-hidden pr-[12px]">
+                  <table className="w-full table-fixed border-collapse text-sm">
+                    <colgroup>
+                      <col className="w-[58px]" />
+                      <col className="w-[175px]" />
+                      <col />
+                      <col className="w-[125px]" />
+                      <col className="w-[125px]" />
+                      <col className="w-[200px]" />
+                      <col className="w-[88px]" />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th className={headerCell}>
+                          line_no
+                          <span className={headerSub}>N°</span>
+                        </th>
+                        <th className={headerCell}>
+                          <b>Código cuenta</b>
+                          <span className={headerSub}>account_code</span>
+                        </th>
+                        <th className={headerCell}>
+                          <b>Glosa de la línea</b>
+                          <span className={headerSub}>line_description</span>
+                        </th>
+                        <th className={headerCell}>
+                          <b>Debe</b>
+                          <span className={headerSub}>debit</span>
+                        </th>
+                        <th className={headerCell}>
+                          <b>Haber</b>
+                          <span className={headerSub}>credit</span>
+                        </th>
+                        <th className={headerCell}>
+                          <b>ID tercero</b>
+                          <span className={headerSub}>counterparty_id</span>
+                        </th>
+                        <th className={cls(headerCell, "text-center")}>
+                          <b>Acciones</b>
+                          <span className={headerSub}> </span>
+                        </th>
+                      </tr>
+                    </thead>
+                  </table>
+                </div>
+
+                {/* Body scrollable */}
+                <div className="overflow-y-auto flex-1">
+                  <table className="w-full table-fixed border-collapse text-sm">
+                    <colgroup>
+                      <col className="w-[58px]" />
+                      <col className="w-[175px]" />
+                      <col />
+                      <col className="w-[125px]" />
+                      <col className="w-[125px]" />
+                      <col className="w-[200px]" />
+                      <col className="w-[88px]" />
+                    </colgroup>
+                    <tbody>
+                      {lines.map((l, idx) => {
+                        const { acc, reqCC, reqCU, reqBR, reqIT, reqCP } =
+                          getPolicyForLine(l);
+                        const cpKey = normalizeCode(l.counterparty_identifier);
+                        const cpFound = cpKey
+                          ? !!counterpartyMap[cpKey]
+                          : false;
+                        const rowBg =
+                          idx % 2 === 0
+                            ? "bg-slate-50/80"
+                            : "bg-slate-100/50";
+                        return (
+                          <React.Fragment key={idx}>
+                            <tr className={cls(rowBg, "hover:bg-sky-50/30")}>
+                              <td
+                                className={cls(
+                                  bodyCell,
+                                  "text-slate-600 text-xs"
+                                )}
+                              >
+                                {l.line_no}
+                              </td>
+                              <td className={bodyCell}>
+                                <input
+                                  ref={
+                                    setCellRef(idx, "account_code") as any
+                                  }
+                                  className={cellClass(l, "account_code")}
+                                  value={l.account_code}
+                                  disabled={!canEdit || modalReadOnly}
+                                  onChange={(e) =>
+                                    updateLine(idx, {
+                                      account_code: e.target.value,
+                                    })
+                                  }
+                                  onBlur={() => resolveAccount(idx)}
+                                  onKeyDown={(e) =>
+                                    handleMainKeyDown(e, idx, "account_code")
+                                  }
+                                  placeholder="Ej: 1020101"
+                                  list="dl-accounts"
+                                />
+                                <div className="text-[11px] text-slate-500 truncate">
+                                  {acc ? (
+                                    acc.name
+                                  ) : l.account_code.trim() ? (
+                                    <span className="text-amber-700">
+                                      no existe
+                                    </span>
+                                  ) : (
+                                    "—"
+                                  )}
+                                </div>
+                              </td>
+                              <td className={bodyCell}>
+                                <input
+                                  ref={
+                                    setCellRef(idx, "line_description") as any
+                                  }
+                                  className={cellClass(l, "line_description")}
+                                  value={l.line_description}
+                                  disabled={!canEdit || modalReadOnly}
+                                  onChange={(e) =>
+                                    updateLine(idx, {
+                                      line_description: e.target.value,
+                                    })
+                                  }
+                                  onKeyDown={(e) =>
+                                    handleMainKeyDown(
+                                      e,
+                                      idx,
+                                      "line_description"
+                                    )
+                                  }
+                                  placeholder="Ej: Pago proveedor"
+                                />
+                              </td>
+                              <td className={bodyCell}>
+                                <input
+                                  ref={setCellRef(idx, "debit") as any}
+                                  className={cls(
+                                    cellClass(l, "debit"),
+                                    "text-right"
+                                  )}
+                                  value={l.debit}
+                                  disabled={!canEdit || modalReadOnly}
+                                  onChange={(e) =>
+                                    updateLine(idx, { debit: e.target.value })
+                                  }
+                                  onKeyDown={(e) =>
+                                    handleMainKeyDown(e, idx, "debit")
+                                  }
+                                  placeholder={
+                                    moneyDecimals
+                                      ? `0.${"0".repeat(
+                                          Math.min(2, moneyDecimals)
+                                        )}`
+                                      : "0"
+                                  }
+                                  inputMode="decimal"
+                                />
+                              </td>
+                              <td className={bodyCell}>
+                                <input
+                                  ref={setCellRef(idx, "credit") as any}
+                                  className={cls(
+                                    cellClass(l, "credit"),
+                                    "text-right"
+                                  )}
+                                  value={l.credit}
+                                  disabled={!canEdit || modalReadOnly}
+                                  onChange={(e) =>
+                                    updateLine(idx, { credit: e.target.value })
+                                  }
+                                  onKeyDown={(e) =>
+                                    handleMainKeyDown(e, idx, "credit")
+                                  }
+                                  placeholder={
+                                    moneyDecimals
+                                      ? `0.${"0".repeat(
+                                          Math.min(2, moneyDecimals)
+                                        )}`
+                                      : "0"
+                                  }
+                                  inputMode="decimal"
+                                />
+                              </td>
+                              <td className={bodyCell}>
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    ref={
+                                      setCellRef(
+                                        idx,
+                                        "counterparty_identifier"
+                                      ) as any
+                                    }
+                                    className={cls(
+                                      cellClass(l, "counterparty_identifier"),
+                                      reqCP ? "bg-rose-50/40" : ""
+                                    )}
+                                    value={l.counterparty_identifier}
+                                    disabled={!canEdit || modalReadOnly}
+                                    onChange={(e) =>
+                                      updateLine(idx, {
+                                        counterparty_identifier: e.target.value,
+                                      })
+                                    }
+                                    onBlur={() =>
+                                      resolveTrimField(
+                                        idx,
+                                        "counterparty_identifier"
+                                      )
+                                    }
+                                    onKeyDown={(e) =>
+                                      handleMainKeyDown(
+                                        e,
+                                        idx,
+                                        "counterparty_identifier"
+                                      )
+                                    }
+                                    placeholder="Ej: RUT/NIT"
+                                  />
+                                  {canEdit &&
+                                  !modalReadOnly &&
+                                  cpKey &&
+                                  !cpFound &&
+                                  counterpartiesAvailable ? (
+                                    <button
+                                      className="shrink-0 text-[11px] rounded border border-slate-200 px-1.5 py-0.5 hover:bg-white"
+                                      onClick={() =>
+                                        openCreateCounterparty(cpKey)
+                                      }
+                                      tabIndex={-1}
+                                      title="Crear tercero"
+                                    >
+                                      Crear
+                                    </button>
+                                  ) : null}
+                                </div>
+                                <div className="text-[11px] text-slate-500 truncate">
+                                  {cpFound ? (
+                                    <b className="text-slate-700">
+                                      {l.counterparty_name_resolved}
+                                    </b>
+                                  ) : cpKey ? (
+                                    <span className="text-amber-700">
+                                      no existe
+                                    </span>
+                                  ) : (
+                                    "—"
+                                  )}
+                                </div>
+                              </td>
+                              <td className={cls(bodyCell, "text-right")}>
+                                <div className="flex items-center justify-end gap-1 pr-1">
+                                  <button
+                                    className={cls(
+                                      "rounded-lg border border-slate-200 px-2 py-1 text-xs hover:bg-slate-50 transition",
+                                      l.details_open ? "bg-slate-100" : ""
+                                    )}
+                                    onClick={() => toggleDetails(idx)}
+                                    tabIndex={-1}
+                                    title="Detalles"
+                                  >
+                                    {l.details_open ? "—" : "+"}
+                                  </button>
+                                  {!modalReadOnly && (
+                                    <button
+                                      className={cls(
+                                        "rounded-lg border border-slate-200 px-2 py-1 text-xs hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200 transition",
+                                        !canEdit
+                                          ? "opacity-60 cursor-not-allowed"
+                                          : ""
+                                      )}
+                                      disabled={!canEdit}
+                                      onClick={() => removeLine(idx)}
+                                      tabIndex={-1}
+                                      title="Eliminar fila"
+                                    >
+                                      ✕
+                                    </button>
+                                  )}
+                                </div>
+                                {reqCC || reqCU || reqBR || reqCP ? (
+                                  <div className="mt-0.5 text-[10px] text-slate-500 text-right pr-1">
+                                    {reqCC ? "CC " : ""}
+                                    {reqCU ? "CU " : ""}
+                                    {reqBR ? "BR " : ""}
+                                    {reqCP ? "CP" : ""}
+                                  </div>
+                                ) : null}
+                              </td>
+                            </tr>
+
+                            {l.details_open ? (
+                              <tr>
+                                <td
+                                  colSpan={7}
+                                  className="border-b border-slate-200 border-l-[3px] border-l-[#123b63]/25 bg-[#f2f6fb] px-3 py-1.5"
+                                >
+                                  <div className="flex items-center gap-3">
+                                    {/* Indicador */}
+                                    <span className="shrink-0 text-[10px] font-semibold text-[#123b63]/40">
+                                      ↳ dim.
+                                    </span>
+
+                                    {/* Centro de costo */}
+                                    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                                      <span className={cls(
+                                        "shrink-0 text-[10px] font-semibold text-slate-400",
+                                        reqCC ? "text-rose-400" : ""
+                                      )}>
+                                        C.Costo{reqCC ? "*" : ""}
+                                      </span>
+                                      <div className="min-w-0 flex-1">
+                                        <input
+                                          className={cls(
+                                            "w-full rounded border bg-white px-1.5 py-0.5 text-[12px] outline-none focus:border-[#123b63]/50 transition",
+                                            l.cellErrors?.cost_center_code ? "border-rose-300" :
+                                            reqCC ? "border-rose-200" : "border-slate-200"
+                                          )}
+                                          value={l.cost_center_code}
+                                          disabled={!canEdit || modalReadOnly}
+                                          onChange={(e) => updateLine(idx, { cost_center_code: e.target.value })}
+                                          onBlur={() => resolveTrimField(idx, "cost_center_code")}
+                                          list="dl-cc"
+                                          placeholder="Código"
+                                        />
+                                        {l.cost_center_code.trim() && (
+                                          <div className="truncate text-[10px] text-[#123b63]/60">
+                                            {resolvedLabelForDim("cc", l.cost_center_code)}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    <div className="h-6 w-px shrink-0 bg-slate-200" />
+
+                                    {/* Línea de negocio */}
+                                    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                                      <span className={cls(
+                                        "shrink-0 text-[10px] font-semibold text-slate-400",
+                                        reqCU ? "text-rose-400" : ""
+                                      )}>
+                                        L.Negocio{reqCU ? "*" : ""}
+                                      </span>
+                                      <div className="min-w-0 flex-1">
+                                        <input
+                                          className={cls(
+                                            "w-full rounded border bg-white px-1.5 py-0.5 text-[12px] outline-none focus:border-[#123b63]/50 transition",
+                                            l.cellErrors?.business_line_code ? "border-rose-300" :
+                                            reqCU ? "border-rose-200" : "border-slate-200"
+                                          )}
+                                          value={l.business_line_code}
+                                          disabled={!canEdit || modalReadOnly}
+                                          onChange={(e) => updateLine(idx, { business_line_code: e.target.value })}
+                                          onBlur={() => resolveTrimField(idx, "business_line_code")}
+                                          list="dl-cu"
+                                          placeholder="Código"
+                                        />
+                                        {l.business_line_code.trim() && (
+                                          <div className="truncate text-[10px] text-[#123b63]/60">
+                                            {resolvedLabelForDim("cu", l.business_line_code)}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    <div className="h-6 w-px shrink-0 bg-slate-200" />
+
+                                    {/* Sucursal */}
+                                    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                                      <span className={cls(
+                                        "shrink-0 text-[10px] font-semibold text-slate-400",
+                                        reqBR ? "text-rose-400" : ""
+                                      )}>
+                                        Sucursal{reqBR ? "*" : ""}
+                                      </span>
+                                      <div className="min-w-0 flex-1">
+                                        <input
+                                          className={cls(
+                                            "w-full rounded border bg-white px-1.5 py-0.5 text-[12px] outline-none focus:border-[#123b63]/50 transition",
+                                            l.cellErrors?.branch_code ? "border-rose-300" :
+                                            reqBR ? "border-rose-200" : "border-slate-200"
+                                          )}
+                                          value={l.branch_code}
+                                          disabled={!canEdit || modalReadOnly}
+                                          onChange={(e) => updateLine(idx, { branch_code: e.target.value })}
+                                          onBlur={() => resolveTrimField(idx, "branch_code")}
+                                          list="dl-br"
+                                          placeholder="Código"
+                                        />
+                                        {l.branch_code.trim() && (
+                                          <div className="truncate text-[10px] text-[#123b63]/60">
+                                            {resolvedLabelForDim("br", l.branch_code)}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            ) : null}
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Footer — totales + botones */}
+                <div className="shrink-0 border-t bg-white px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                  {/* Lado izquierdo: info */}
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+                    <span>
+                      Moneda: <b className="text-slate-900">{header.currency_code}</b>
+                    </span>
+                    <span className="text-slate-300">|</span>
+                    <span>
+                      Debe: <b className="text-slate-900">{formatNumber(totals.debit, moneyDecimals)}</b>
+                    </span>
+                    <span className="text-slate-300">|</span>
+                    <span>
+                      Haber: <b className="text-slate-900">{formatNumber(totals.credit, moneyDecimals)}</b>
+                    </span>
+                    <span className="text-slate-300">|</span>
+                    <span className={cls(
+                      "font-semibold",
+                      Math.abs(totals.diff) <= postingTolerance
+                        ? "text-emerald-700"
+                        : "text-rose-700"
+                    )}>
+                      Diff: {formatNumber(totals.diff, moneyDecimals)}
+                    </span>
+                    {errorCount > 0 && (
+                      <>
+                        <span className="text-slate-300">|</span>
+                        <span className="font-semibold text-rose-600">
+                          {errorCount} error{errorCount !== 1 ? "es" : ""}
+                        </span>
+                      </>
+                    )}
+                    {warnCount > 0 && (
+                      <>
+                        <span className="text-slate-300">|</span>
+                        <span className="font-semibold text-amber-600">
+                          {warnCount} aviso{warnCount !== 1 ? "s" : ""}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                  {/* Lado derecho: botones */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-all duration-200 hover:bg-slate-50 hover:border-slate-400 hover:-translate-y-[1px] hover:shadow-sm active:translate-y-0"
+                      onClick={() => { setEditorOpen(false); setModalReadOnly(false); }}
+                    >
+                      Cerrar
+                    </button>
+                    {!modalReadOnly && (
+                      <>
+                        <button
+                          type="button"
+                          className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-all duration-200 hover:bg-slate-50 hover:border-slate-400 hover:-translate-y-[1px] hover:shadow-sm active:translate-y-0"
+                          onClick={() => runValidate(true)}
+                        >
+                          Validar
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-all duration-200 hover:bg-slate-50 hover:border-slate-400 hover:-translate-y-[1px] hover:shadow-sm active:translate-y-0"
+                          onClick={resetNew}
+                        >
+                          Limpiar
+                        </button>
+                        <button
+                          type="button"
+                          className={cls(
+                            "rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-all duration-200 hover:bg-slate-50 hover:border-slate-400 hover:-translate-y-[1px] hover:shadow-sm active:translate-y-0",
+                            (!canEdit || savingDraft) ? "opacity-60 cursor-not-allowed" : ""
+                          )}
+                          disabled={!canEdit || savingDraft}
+                          onClick={onSaveDraftClick}
+                        >
+                          {savingDraft ? "Guardando..." : "Guardar borrador"}
+                        </button>
+                        <button
+                          type="button"
+                          className={cls(
+                            "rounded-xl px-4 py-2 text-sm font-bold text-white bg-slate-900 transition-all duration-200 hover:bg-slate-800 hover:-translate-y-[1px] hover:shadow-md active:translate-y-0",
+                            (!canEdit || posting) ? "opacity-60 cursor-not-allowed" : ""
+                          )}
+                          disabled={!canEdit || posting}
+                          onClick={onPostClick}
+                        >
+                          {posting ? "Contabilizando..." : "Contabilizar"}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
               </div>
-            </div>
-          ) : null}
-
-          {/* Cabecera */}
-          <div className="px-4 py-3 grid grid-cols-1 md:grid-cols-4 gap-3">
-            <div>
-              <label className="text-xs text-slate-600 font-medium">
-                Fecha del asiento
-              </label>
-              <div className="text-[11px] text-slate-500">entry_date</div>
-              <input
-                type="date"
-                className="mt-1 w-full rounded-lg border px-2 py-2 text-sm"
-                value={header.entry_date}
-                disabled={!canEdit}
-                onChange={(e) =>
-                  setHeader((h) => ({ ...h, entry_date: e.target.value }))
-                }
-              />
-            </div>
-
-            <div className="md:col-span-2">
-              <label className="text-xs text-slate-600 font-medium">
-                Descripción general
-              </label>
-              <div className="text-[11px] text-slate-500">description</div>
-              <input
-                className="mt-1 w-full rounded-lg border px-2 py-2 text-sm"
-                placeholder="Ej: Pago proveedor, Ajuste, Nómina..."
-                value={header.description}
-                disabled={!canEdit}
-                onChange={(e) =>
-                  setHeader((h) => ({ ...h, description: e.target.value }))
-                }
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-slate-600 font-medium">
-                Documento o referencia
-              </label>
-              <div className="text-[11px] text-slate-500">
-                reference (num_doc)
-              </div>
-              <input
-                className="mt-1 w-full rounded-lg border px-2 py-2 text-sm"
-                placeholder="FAC-123 / OC-456"
-                value={header.reference}
-                disabled={!canEdit}
-                onChange={(e) =>
-                  setHeader((h) => ({ ...h, reference: e.target.value }))
-                }
-              />
             </div>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Tabla */}
-      <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
-        <div className="px-4 py-3 border-b">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="font-semibold text-slate-900">Líneas</h2>
-              <div className="text-[11px] text-slate-500">
-                Enter avanza • Shift+Enter retrocede • ↑/↓ cambia de fila •
-                Ctrl+Enter abre/cierra detalles
+      {/* ════════════════════════════════════════════════════════════
+          SHELL PRINCIPAL
+      ════════════════════════════════════════════════════════════ */}
+      <div className="overflow-hidden rounded-[28px] bg-white ring-1 ring-slate-200 shadow-[0_18px_70px_rgba(15,23,42,0.10)]">
+
+        {/* ── CABECERA OSCURA ── */}
+        <div className="relative bg-gradient-to-r from-[#0b2b4f] via-[#123b63] to-[#0b2b4f] text-white px-7 py-7">
+          <div className="pointer-events-none absolute -top-24 -right-24 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
+          <div className="pointer-events-none absolute -bottom-24 -left-24 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
+          <div className="relative flex flex-wrap items-end justify-between gap-4">
+            <div className="min-w-0">
+              <div className="text-[12px] font-extrabold uppercase text-white/80">
+                Gestión Contable
+              </div>
+              <h1 className="mt-1 text-3xl font-black leading-tight">
+                Asientos Contables
+              </h1>
+              <div className="mt-4 flex flex-wrap gap-2 text-xs text-white/90">
+                {activeTab === "drafts" ? (
+                  <>
+                    <span className="inline-flex items-center rounded-full bg-white/10 px-2 py-0.5 ring-1 ring-white/15">
+                      Borradores: <b className="ml-1">{drafts.length}</b>
+                    </span>
+                    <span className="inline-flex items-center rounded-full bg-white/10 px-2 py-0.5 ring-1 ring-white/15">
+                      Total debe:{" "}
+                      <b className="ml-1">
+                        {formatNumber(
+                          drafts.reduce(
+                            (s, d) =>
+                              s + d.lines.reduce((a, l) => a + Number(l.debit || 0), 0),
+                            0
+                          ),
+                          moneyDecimals
+                        )}
+                      </b>
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="inline-flex items-center rounded-full bg-white/10 px-2 py-0.5 ring-1 ring-white/15">
+                      Registrados: <b className="ml-1">{registered.length}</b>
+                    </span>
+                    <span className="inline-flex items-center rounded-full bg-white/10 px-2 py-0.5 ring-1 ring-white/15">
+                      Total debe:{" "}
+                      <b className="ml-1">
+                        {formatNumber(
+                          registered.reduce(
+                            (s, d) =>
+                              s + d.lines.reduce((a, l) => a + Number(l.debit || 0), 0),
+                            0
+                          ),
+                          moneyDecimals
+                        )}
+                      </b>
+                    </span>
+                  </>
+                )}
               </div>
             </div>
-
-            <div className="flex items-center gap-3">
-              <div className="text-sm text-slate-700">
-                <b>debit:</b> {formatNumber(totals.debit, moneyDecimals)}{" "}
-                <span className="mx-2 text-slate-300">|</span>{" "}
-                <b>credit:</b> {formatNumber(totals.credit, moneyDecimals)}
-              </div>
-
+            <div className="flex flex-wrap items-center gap-2">
               <button
+                type="button"
+                className="rounded-2xl bg-white/10 px-4 py-2 text-[12px] font-extrabold ring-1 ring-white/15 hover:bg-white/15 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-md active:translate-y-0"
+                onClick={() => { if (activeTab === "drafts") loadDrafts(); else loadRegistered(); }}
+              >
+                {(activeTab === "drafts" ? loadingDrafts : loadingRegistered) ? "Cargando..." : "Refrescar"}
+              </button>
+              <button
+                type="button"
                 className={cls(
-                  "rounded-lg bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-800",
+                  "rounded-2xl bg-white/10 px-4 py-2 text-[12px] font-extrabold ring-1 ring-white/15 hover:bg-white/15 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-md active:translate-y-0",
                   !canEdit ? "opacity-60 cursor-not-allowed" : ""
                 )}
                 disabled={!canEdit}
-                onClick={() => addMoreLines(10)}
-                title="Agrega 10 filas"
+                onClick={openImportModal}
+                title="Importar asientos desde Excel"
               >
-                + 10 líneas
+                ⬆️ Cargar Excel
               </button>
+              <button
+                type="button"
+                className="rounded-2xl bg-white/10 px-4 py-2 text-[12px] font-extrabold ring-1 ring-white/15 hover:bg-white/15 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-md active:translate-y-0"
+                onClick={downloadTemplate}
+                title="Descargar plantilla de carga masiva"
+              >
+                ⬇️ Descargar formato
+              </button>
+              {canEdit && (
+                <button
+                  type="button"
+                  className="rounded-2xl bg-white/10 px-4 py-2 text-[12px] font-extrabold ring-1 ring-white/15 hover:bg-white/15 transition-all duration-200 hover:-translate-y-[1px] hover:shadow-md active:translate-y-0"
+                  onClick={() => {
+                    resetNew();
+                    setModalReadOnly(false);
+                    setEditorOpen(true);
+                  }}
+                >
+                  + Nuevo Asiento
+                </button>
+              )}
             </div>
           </div>
         </div>
 
-        <datalist id="dl-accounts">
-          {accounts.map((a) => (
-            <option key={a.id} value={a.code}>
-              {a.name}
-            </option>
-          ))}
-        </datalist>
+        {/* ── CUERPO ── */}
+        <div className="p-7">
 
-        <datalist id="dl-cc">
-          {costCenters.map((x) => (
-            <option key={x.id} value={x.code}>
-              {x.name}
-            </option>
-          ))}
-        </datalist>
-        <datalist id="dl-cu">
-          {businessLines.map((x) => (
-            <option key={x.id} value={x.code}>
-              {x.name}
-            </option>
-          ))}
-        </datalist>
-        <datalist id="dl-br">
-          {branches.map((x) => (
-            <option key={x.id} value={x.code}>
-              {x.name}
-            </option>
-          ))}
-        </datalist>
-        <datalist id="dl-it">
-          {items.map((x) => (
-            <option key={x.id} value={x.code}>
-              {x.name}
-            </option>
-          ))}
-        </datalist>
-        <datalist id="dl-tax">
-          {taxes.map((t) => (
-            <option key={t.id} value={t.code}>
-              {t.name}
-            </option>
-          ))}
-        </datalist>
+          {pageMsg && (
+            <div
+              className={cls(
+                "mb-4 rounded-xl border px-4 py-2 text-sm",
+                pageMsg.level === "error"
+                  ? "border-rose-200 bg-rose-50 text-rose-700"
+                  : "border-emerald-200 bg-emerald-50 text-emerald-700"
+              )}
+            >
+              {pageMsg.text}
+            </div>
+          )}
+          {!canEdit && (
+            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-2 text-sm text-amber-900">
+              Modo solo lectura (role: {role || "—"}).
+            </div>
+          )}
+          {!counterpartiesAvailable && (
+            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-2 text-sm text-amber-900">
+              ⚠️ Tabla de terceros no disponible. No se puede resolver nombre.
+            </div>
+          )}
 
-        {/* ✅ header fijo + body con scroll */}
-        <div className="border-t border-slate-200">
-          <div className="overflow-hidden pr-[12px]">
-            <table className="w-full table-fixed border-collapse text-sm">
+          <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
+
+            {/* ── TAB BAR ── */}
+            <div className="border-b px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+
+                {/* Tabs (pill style) */}
+                <div>
+                  <div className="flex items-center gap-2">
+                    {([
+                      { key: "drafts",     label: "Borradores" },
+                      { key: "registered", label: "Registrados" },
+                    ] as const).map(({ key, label }) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setActiveTab(key)}
+                        className={cls(
+                          "rounded-xl px-3 py-2 text-sm font-bold transition",
+                          activeTab === key
+                            ? "bg-[#123b63] text-white shadow"
+                            : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-2 text-[11px] text-slate-500">
+                    {activeTab === "drafts"
+                      ? "Asientos en borrador pendientes de contabilizar."
+                      : "Asientos ya contabilizados."}
+                  </div>
+                </div>
+
+                {/* Acciones del tab */}
+                <div className="flex flex-wrap items-center gap-2">
+
+                  {/* ── Trio estándar: Filtros / Limpiar / Reporte ── */}
+                  <FilterActionButtons
+                    hasActiveFilters={hasActiveFilters}
+                    onOpenFilters={() => setFiltersOpen(true)}
+                    onClearFilters={() => setFilters(EMPTY_ASIENTOS_FILTERS)}
+                    onReport={downloadReport}
+                    reportTitle={`Descargar Excel — ${activeTab === "drafts" ? "Borradores" : "Registrados"} (con filtros aplicados)`}
+                  />
+
+                  {/* ── Acciones específicas del tab ── */}
+                  {activeTab === "drafts" && canEdit && (
+                    <>
+                      <button
+                        type="button"
+                        className={cls(
+                          "rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-all duration-200 hover:bg-slate-50 hover:border-slate-400 hover:-translate-y-[1px] hover:shadow-sm active:translate-y-0",
+                          posting || loadingDrafts || drafts.length === 0
+                            ? "opacity-60 cursor-not-allowed"
+                            : ""
+                        )}
+                        disabled={posting || loadingDrafts || drafts.length === 0}
+                        onClick={deleteAllDrafts}
+                      >
+                        Eliminar todos
+                      </button>
+                      <button
+                        type="button"
+                        className={cls(
+                          "rounded-xl px-4 py-2 text-sm font-bold text-white bg-slate-900 transition-all duration-200 hover:bg-slate-800 hover:-translate-y-[1px] hover:shadow-md active:translate-y-0",
+                          posting || loadingDrafts || drafts.length === 0
+                            ? "opacity-60 cursor-not-allowed"
+                            : ""
+                        )}
+                        disabled={posting || loadingDrafts || drafts.length === 0}
+                        onClick={postAllDrafts}
+                      >
+                        {posting ? "Contabilizando..." : "Contabilizar todos"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Contenido */}
+        <div className="p-4">
+        {(activeTab === "drafts"
+          ? loadingDrafts && drafts.length === 0
+          : loadingRegistered && registered.length === 0) ? (
+          <div className="p-10 text-center text-[12px] text-slate-500">
+            Cargando…
+          </div>
+        ) : (activeTab === "drafts" ? filteredDrafts : filteredRegistered).length === 0 ? (
+          <div className="p-10 text-center text-[12px] text-slate-500">
+            {hasActiveFilters
+              ? "Sin resultados para los filtros aplicados."
+              : activeTab === "drafts"
+              ? "No hay borradores."
+              : "No hay asientos registrados."}
+          </div>
+        ) : (() => {
+          const rows = activeTab === "drafts" ? filteredDrafts : filteredRegistered;
+          const allSelected = rows.length > 0 && rows.every(r => selectedRows[r.header.id]);
+          const someSelected = rows.some(r => selectedRows[r.header.id]);
+          function toggleSelectAll() {
+            if (allSelected) { setSelectedRows({}); }
+            else { const m: Record<string,boolean> = {}; rows.forEach(r => { m[r.header.id] = true; }); setSelectedRows(m); }
+          }
+          return (
+          <div className="mt-0 rounded-2xl bg-white shadow-[0_8px_30px_rgba(20,12,70,0.12)] ring-1 ring-slate-200/60">
+          <div
+            ref={tableContainerRef}
+            className="w-full overflow-x-auto rounded-2xl overflow-y-auto"
+            style={{ maxHeight: "calc(100vh - 300px)" }}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 200;
+              if (!nearBottom) return;
+              if (activeTab === "drafts" && draftsHasMore && !loadingMoreDrafts) {
+                loadDrafts(false);
+              } else if (activeTab === "registered" && registeredHasMore && !loadingMoreRegistered) {
+                loadRegistered(false);
+              }
+            }}
+          >
+            <table className="w-full table-fixed text-[12px]">
               <colgroup>
-                <col className="w-[52px]" />
-                <col className="w-[180px]" />
-                <col className="w-[260px]" />
-                <col className="w-[125px]" />
-                <col className="w-[125px]" />
-                <col className="w-[180px]" />
-                <col className="w-[220px]" />
-                <col className="w-[76px]" />
+                {/* checkbox */}<col style={{ width: "4%" }} />
+                {/* Fecha */}<col style={{ width: "7%" }} />
+                {/* Origen */}<col style={{ width: "8%" }} />
+                {/* E. Diario */}<col style={{ width: "8%" }} />
+                {/* RUT/NIC */}<col style={{ width: "9%" }} />
+                {/* Nombre Contraparte */}<col style={{ width: "14%" }} />
+                {/* Referencia */}<col style={{ width: "12%" }} />
+                {/* Debe */}<col style={{ width: "9%" }} />
+                {/* Haber */}<col style={{ width: "9%" }} />
+                {/* Estado */}<col style={{ width: "11%" }} />
+                {/* Acciones */}<col style={{ width: "8%" }} />
               </colgroup>
-
-              <thead>
+              <thead className="sticky top-0 z-20 bg-gradient-to-b from-[#eaf2fb] via-[#dde9f7] to-[#d6e4f5] border-b-2 border-[#123b63]/40 shadow-[0_2px_0_rgba(18,59,99,0.35)]">
                 <tr>
-                  <th className={headerCell}>
-                    line_no
-                    <span className={headerSub}>N°</span>
+                  {/* Checkbox select-all */}
+                  <th className="px-1.5 py-3 text-[10px] font-extrabold uppercase tracking-[0.06em] text-center text-[#0b2b4f] overflow-hidden">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 cursor-pointer"
+                      checked={allSelected}
+                      ref={el => { if (el) el.indeterminate = !allSelected && someSelected; }}
+                      onChange={toggleSelectAll}
+                      disabled={!canEdit}
+                    />
                   </th>
-
-                  <th className={headerCell}>
-                    <b>Código cuenta contable</b>
-                    <span className={headerSub}>account_code</span>
-                  </th>
-
-                  <th className={headerCell}>
-                    <b>Glosa de la línea</b>
-                    <span className={headerSub}>line_description</span>
-                  </th>
-
-                  <th className={headerCell}>
-                    <b>Monto debe</b>
-                    <span className={headerSub}>debit</span>
-                  </th>
-
-                  <th className={headerCell}>
-                    <b>Monto haber</b>
-                    <span className={headerSub}>credit</span>
-                  </th>
-
-                  <th className={headerCell}>
-                    <b>ID tercero</b>
-                    <span className={headerSub}>counterparty_identifier</span>
-                  </th>
-
-                  <th className={headerCell}>
-                    <b>Referencia de la línea</b>
-                    <span className={headerSub}>line_reference</span>
-                  </th>
-
-                  <th className={cls(headerCell, "text-right")}>
-                    <span className={headerSub}> </span>
-                  </th>
+                  {([
+                    { key: "entry_date",    label: "Fecha",             align: "text-left",   sortable: true  },
+                    { key: "source",        label: "Origen",            align: "text-center", sortable: true  },
+                    { key: "entry_number",  label: "E. Diario",         align: "text-center", sortable: true  },
+                    { key: "rut",           label: "RUT / NIC",         align: "text-center", sortable: true  },
+                    { key: "counterparty",  label: "Nombre Contraparte", align: "text-left",  sortable: true  },
+                    { key: "description",   label: "Referencia",        align: "text-left",   sortable: true  },
+                    { key: "debit",        label: "Debe",              align: "text-right",  sortable: true  },
+                    { key: "credit",       label: "Haber",             align: "text-right",  sortable: true  },
+                    { key: "status",       label: "Estado",            align: "text-center", sortable: true  },
+                    { key: "_actions",     label: "Acciones",    align: "text-center", sortable: false },
+                  ] as { key: string; label: string; align: string; sortable: boolean }[]).map(({ key, label, align, sortable }) => (
+                    <th
+                      key={key}
+                      className={cls(
+                        "px-1.5 py-3 text-[10px] font-extrabold tracking-[0.06em] text-[#0b2b4f] overflow-hidden whitespace-nowrap",
+                        align
+                      )}
+                    >
+                      {sortable ? (
+                        <button
+                          type="button"
+                          className={cls(
+                            "mx-auto inline-flex items-center gap-1 rounded-md px-1.5 py-1 transition-colors hover:bg-white/60",
+                            sortCol === key && "bg-white/70"
+                          )}
+                          onClick={() => {
+                            if (sortCol === key) setSortDir((d) => d === "asc" ? "desc" : "asc");
+                            else { setSortCol(key); setSortDir("asc"); }
+                          }}
+                        >
+                          {label}
+                          {sortCol === key && sortDir === "asc"
+                            ? <ChevronUp className="h-3.5 w-3.5 text-[#123b63]" />
+                            : sortCol === key && sortDir === "desc"
+                            ? <ChevronDown className="h-3.5 w-3.5 text-[#123b63]" />
+                            : <ChevronsUpDown className="h-3.5 w-3.5 text-slate-400" />
+                          }
+                        </button>
+                      ) : label}
+                    </th>
+                  ))}
                 </tr>
               </thead>
-            </table>
-          </div>
-
-          <div className="max-h-[250px] overflow-auto">
-            <table className="w-full table-fixed border-collapse text-sm">
-              <colgroup>
-                <col className="w-[52px]" />
-                <col className="w-[180px]" />
-                <col className="w-[260px]" />
-                <col className="w-[125px]" />
-                <col className="w-[125px]" />
-                <col className="w-[180px]" />
-                <col className="w-[220px]" />
-                <col className="w-[76px]" />
-              </colgroup>
-
               <tbody>
-                {lines.map((l, idx) => {
-                  const { acc, reqCC, reqCU, reqBR, reqIT, reqCP } =
-                    getPolicyForLine(l);
-
-                  const cpKey = normalizeCode(l.counterparty_identifier);
-                  const cpFound = cpKey ? !!counterpartyMap[cpKey] : false;
-
-                  const rowBg =
-                    idx % 2 === 0 ? "bg-slate-50/80" : "bg-slate-100/50";
-
+                {(() => {
+                  const rows = activeTab === "drafts" ? drafts : registered;
+                  // client-side sort
+                  const sorted = [...rows].sort((a, b) => {
+                    const mul = sortDir === "asc" ? 1 : -1;
+                    if (sortCol === "created_at")
+                      return mul * (a.header.created_at || "").localeCompare(b.header.created_at || "");
+                    if (sortCol === "entry_date")
+                      return mul * a.header.entry_date.localeCompare(b.header.entry_date);
+                    if (sortCol === "entry_number")
+                      return mul * (a.header.entry_number_formatted || "").localeCompare(b.header.entry_number_formatted || "");
+                    if (sortCol === "description")
+                      return mul * (a.header.description || "").localeCompare(b.header.description || "");
+                    if (sortCol === "source") {
+                      const sA = (a.header as any).extra?.source || "";
+                      const sB = (b.header as any).extra?.source || "";
+                      return mul * sA.localeCompare(sB);
+                    }
+                    if (sortCol === "rut") {
+                      const rA = (a.header.counterparty_id ? cpById[a.header.counterparty_id]?.identifier : "") || "";
+                      const rB = (b.header.counterparty_id ? cpById[b.header.counterparty_id]?.identifier : "") || "";
+                      return mul * rA.localeCompare(rB);
+                    }
+                    if (sortCol === "counterparty") {
+                      const nA = (a.header.counterparty_id ? cpById[a.header.counterparty_id]?.name : "") || "";
+                      const nB = (b.header.counterparty_id ? cpById[b.header.counterparty_id]?.name : "") || "";
+                      return mul * nA.localeCompare(nB, "es", { sensitivity: "base" });
+                    }
+                    if (sortCol === "status")
+                      return mul * (a.header.status || "").localeCompare(b.header.status || "");
+                    if (sortCol === "debit") {
+                      const dA = a.lines.reduce((s, x) => s + Number(x.debit || 0), 0);
+                      const dB = b.lines.reduce((s, x) => s + Number(x.debit || 0), 0);
+                      return mul * (dA - dB);
+                    }
+                    if (sortCol === "credit") {
+                      const cA = a.lines.reduce((s, x) => s + Number(x.credit || 0), 0);
+                      const cB = b.lines.reduce((s, x) => s + Number(x.credit || 0), 0);
+                      return mul * (cA - cB);
+                    }
+                    return 0;
+                  });
                   return (
-                    <React.Fragment key={idx}>
-                      <tr className={cls(rowBg, "hover:bg-sky-50/30")}>
-                        <td className={cls(bodyCell, "text-slate-600 text-xs")}>
-                          {l.line_no}
-                        </td>
+                  <>
+                  {sorted.map((d, idx) => {
+                    const dl = d.lines.filter(
+                      (x) => Number(x.debit || 0) > 0 || Number(x.credit || 0) > 0
+                    );
+                    const sumD = dl.reduce((s, x) => s + Number(x.debit || 0), 0);
+                    const sumC = dl.reduce((s, x) => s + Number(x.credit || 0), 0);
+                    const diff = sumD - sumC;
+                    const isExpanded = expandedId === d.header.id;
+                    const extra = (d.header as any).extra;
+                    const source = extra?.source;
 
-                        <td className={bodyCell}>
-                          <input
-                            ref={setCellRef(idx, "account_code") as any}
-                            className={cellClass(l, "account_code")}
-                            value={l.account_code}
-                            disabled={!canEdit}
-                            onChange={(e) =>
-                              updateLine(idx, { account_code: e.target.value })
-                            }
-                            onBlur={() => resolveAccount(idx)}
-                            onKeyDown={(e) =>
-                              handleMainKeyDown(e, idx, "account_code")
-                            }
-                            placeholder="Ej: 1020101"
-                            list="dl-accounts"
-                          />
-                          <div className="text-[11px] text-slate-500 truncate">
-                            {acc ? (
-                              acc.name
-                            ) : l.account_code.trim() ? (
-                              <span className="text-amber-700">no existe</span>
-                            ) : (
-                              "—"
-                            )}
-                          </div>
-                        </td>
+                    // Clasificación del origen — primero, porque isDocSourced depende de ellos
+                    // Doc tributario fiscal: trade_docs_sales / legacy "docs-tribut-ventas" / carga masiva docs
+                    const isFiscalSource = source === "trade_docs_sales" || source === "docs-tribut-ventas" || source === "trade_docs" || source === "trade_doc_mass_import";
+                    // Otro ingreso (no fiscal): trade_docs_non_fiscal* / legacy "otros-docs-ingresos"
+                    const isNonFiscalSource = !!(source && (source.startsWith("trade_docs_non") || source === "otros-docs-ingresos"));
+                    // Importación masiva de asientos contables desde Excel
+                    const isAsientosImport = source === "asientos_import";
 
-                        <td className={bodyCell}>
-                          <input
-                            ref={setCellRef(idx, "line_description") as any}
-                            className={cellClass(l, "line_description")}
-                            value={l.line_description}
-                            disabled={!canEdit}
-                            onChange={(e) =>
-                              updateLine(idx, {
-                                line_description: e.target.value,
-                              })
-                            }
-                            onKeyDown={(e) =>
-                              handleMainKeyDown(e, idx, "line_description")
-                            }
-                            placeholder="Ej: Pago proveedor"
-                          />
-                        </td>
+                    // Contraparte: directo desde journal_entries.counterparty_id → cpById (ya cargado al inicio)
+                    // Para asientos manuales counterparty_id es NULL → celdas vacías (correcto)
+                    const headerCp = d.header.counterparty_id ? cpById[d.header.counterparty_id] : null;
+                    const cpRut  = headerCp?.identifier || "";
+                    const cpName = headerCp?.name       || "";
 
-                        <td className={bodyCell}>
-                          <input
-                            ref={setCellRef(idx, "debit") as any}
-                            className={cls(cellClass(l, "debit"), "text-right")}
-                            value={l.debit}
-                            disabled={!canEdit}
-                            onChange={(e) =>
-                              updateLine(idx, { debit: e.target.value })
-                            }
-                            onKeyDown={(e) => handleMainKeyDown(e, idx, "debit")}
-                            placeholder={
-                              moneyDecimals
-                                ? `0.${"0".repeat(Math.min(2, moneyDecimals))}`
-                                : "0"
-                            }
-                            inputMode="decimal"
-                          />
-                        </td>
+                    const originLabel = isCobrosSource(source) ? "Cobro"
+                      : isFiscalSource    ? "Doc Tributario"
+                      : isNonFiscalSource ? "Otro Ingreso"
+                      : isAsientosImport  ? "Importado"
+                      : "Manual";
 
-                        <td className={bodyCell}>
-                          <input
-                            ref={setCellRef(idx, "credit") as any}
-                            className={cls(
-                              cellClass(l, "credit"),
-                              "text-right"
-                            )}
-                            value={l.credit}
-                            disabled={!canEdit}
-                            onChange={(e) =>
-                              updateLine(idx, { credit: e.target.value })
-                            }
-                            onKeyDown={(e) =>
-                              handleMainKeyDown(e, idx, "credit")
-                            }
-                            placeholder={
-                              moneyDecimals
-                                ? `0.${"0".repeat(Math.min(2, moneyDecimals))}`
-                                : "0"
-                            }
-                            inputMode="decimal"
-                          />
-                        </td>
+                    const originBadge = isCobrosSource(source)
+                      ? "bg-blue-100 text-blue-800"
+                      : isFiscalSource
+                      ? "bg-violet-100 text-violet-800"
+                      : isNonFiscalSource
+                      ? "bg-teal-100 text-teal-800"
+                      : isAsientosImport
+                      ? "bg-emerald-100 text-emerald-800"
+                      : "bg-slate-100 text-slate-600";
 
-                        <td className={bodyCell}>
-                          <div className="flex items-center gap-1">
+                    const tdBase = "px-2 py-2 align-middle border-r last:border-r-0 border-slate-200/50";
+                    const iconBtn        = "inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50";
+                    const iconBtnPrimary = "inline-flex h-9 w-9 items-center justify-center rounded-lg bg-slate-900 text-white hover:bg-slate-800";
+                    const iconBtnDanger  = "inline-flex h-9 w-9 items-center justify-center rounded-lg border border-rose-200 bg-white text-rose-700 hover:bg-rose-50";
+
+                    return (
+                      <React.Fragment key={d.header.id}>
+                        <tr
+                          className={cls(
+                            "cursor-pointer border-t transition-colors",
+                            idx % 2 === 0 ? "bg-white" : "bg-slate-50",
+                            "hover:bg-sky-50/40",
+                            isExpanded && "bg-sky-50/70"
+                          )}
+                          onClick={() => toggleExpandRow(d.header.id, extra)}
+                        >
+                          {/* Checkbox */}
+                          <td className={cls(tdBase, "text-center")} onClick={e => e.stopPropagation()}>
                             <input
-                              ref={
-                                setCellRef(
-                                  idx,
-                                  "counterparty_identifier"
-                                ) as any
-                              }
-                              className={cls(
-                                cellClass(l, "counterparty_identifier"),
-                                reqCP ? "bg-rose-50/40" : ""
-                              )}
-                              value={l.counterparty_identifier}
+                              type="checkbox"
+                              className="h-4 w-4 cursor-pointer"
+                              checked={!!selectedRows[d.header.id]}
+                              onChange={() => setSelectedRows(prev => ({ ...prev, [d.header.id]: !prev[d.header.id] }))}
                               disabled={!canEdit}
-                              onChange={(e) =>
-                                updateLine(idx, {
-                                  counterparty_identifier: e.target.value,
-                                })
-                              }
-                              onBlur={() =>
-                                resolveTrimField(idx, "counterparty_identifier")
-                              }
-                              onKeyDown={(e) =>
-                                handleMainKeyDown(
-                                  e,
-                                  idx,
-                                  "counterparty_identifier"
-                                )
-                              }
-                              placeholder="Ej: RUT/NIT"
                             />
-                            {canEdit &&
-                            cpKey &&
-                            !cpFound &&
-                            counterpartiesAvailable ? (
-                              <button
-                                className="shrink-0 text-[11px] rounded border border-slate-200 px-1.5 py-0.5 hover:bg-white"
-                                onClick={() => openCreateCounterparty(cpKey)}
-                                tabIndex={-1}
-                                title="Crear tercero"
-                              >
-                                Crear
-                              </button>
-                            ) : null}
-                          </div>
-                          <div className="text-[11px] text-slate-500 truncate">
-                            {cpFound ? (
-                              <b className="text-slate-700">
-                                {l.counterparty_name_resolved}
-                              </b>
-                            ) : cpKey ? (
-                              <span className="text-amber-700">no existe</span>
+                          </td>
+
+                          {/* Fecha */}
+                          <td className={cls(tdBase, "whitespace-nowrap text-slate-700")}>
+                            {d.header.entry_date}
+                          </td>
+
+                          {/* Origen */}
+                          <td className={cls(tdBase, "text-center")}>
+                            <span className={cls("inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold", originBadge)}>
+                              {originLabel}
+                            </span>
+                          </td>
+
+                          {/* E. Diario = entry_number_formatted */}
+                          <td className={cls(tdBase, "text-center font-mono text-slate-700 whitespace-nowrap")} title={d.header.entry_number_formatted || ""}>
+                            {d.header.entry_number_formatted || "—"}
+                          </td>
+
+                          {/* RUT / NIC */}
+                          <td className={cls(tdBase, "text-center whitespace-nowrap")}>
+                            <span className="block truncate">{cpRut || "—"}</span>
+                          </td>
+
+                          {/* Contraparte */}
+                          <td className={tdBase} title={cpName || ""}>
+                            <span className="block truncate">{cpName || "—"}</span>
+                          </td>
+
+                          {/* Referencia = description de journal_entries */}
+                          <td className={tdBase} title={d.header.description || ""}>
+                            <span className="block truncate">{d.header.description || "—"}</span>
+                          </td>
+
+                          {/* Debe */}
+                          <td className={cls(tdBase, "text-right font-semibold text-slate-700")}>
+                            {formatNumber(sumD, moneyDecimals)}
+                          </td>
+
+                          {/* Haber */}
+                          <td className={cls(tdBase, "text-right font-semibold text-slate-700")}>
+                            {formatNumber(sumC, moneyDecimals)}
+                          </td>
+
+                          {/* Estado: BORRADOR / CONTABILIZADO */}
+                          <td className={cls(tdBase, "text-center")}>
+                            {activeTab === "drafts" ? (
+                              <span className={cls(
+                                "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold",
+                                Math.abs(diff) <= postingTolerance
+                                  ? "bg-amber-100/70 text-amber-900"
+                                  : "bg-rose-100/70 text-rose-900"
+                              )}>
+                                {Math.abs(diff) <= postingTolerance ? "BORRADOR" : "DESCUADRADO"}
+                              </span>
                             ) : (
-                              "—"
+                              <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold bg-emerald-100/70 text-emerald-900">
+                                CONTABILIZADO
+                              </span>
                             )}
-                          </div>
-                        </td>
+                          </td>
 
-                        <td className={bodyCell}>
-                          <input
-                            ref={setCellRef(idx, "line_reference") as any}
-                            className={cellClass(l, "line_reference")}
-                            value={l.line_reference}
-                            disabled={!canEdit}
-                            onChange={(e) =>
-                              updateLine(idx, {
-                                line_reference: e.target.value,
-                              })
-                            }
-                            onBlur={() => resolveTrimField(idx, "line_reference")}
-                            onKeyDown={(e) =>
-                              handleMainKeyDown(e, idx, "line_reference")
-                            }
-                            placeholder="Ej: FAC-123-1"
-                          />
-                        </td>
-
-                        <td className={cls(bodyCell, "text-right")}>
-                          <div className="flex items-center justify-end gap-1 pr-1">
-                            <button
-                              className={cls(
-                                "text-xs rounded border border-slate-200 px-2 py-1 hover:bg-white",
-                                l.details_open ? "bg-slate-100" : ""
+                          {/* Acciones */}
+                          <td className={cls(tdBase, "text-center")} onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center justify-center gap-1">
+                              {activeTab === "drafts" && canEdit && (
+                                <>
+                                  {/* Editar */}
+                                  <button
+                                    type="button"
+                                    title="Editar asiento"
+                                    aria-label="Editar"
+                                    className={iconBtn}
+                                    onClick={() => openEntryInModal(d.header.id, false)}
+                                  >
+                                    <Pencil className="h-4 w-4" />
+                                  </button>
+                                  {/* Contabilizar */}
+                                  <button
+                                    type="button"
+                                    title={Math.abs(diff) > postingTolerance ? "No está cuadrado" : "Contabilizar"}
+                                    aria-label="Contabilizar"
+                                    className={cls(iconBtnPrimary, (posting || Math.abs(diff) > postingTolerance) && "opacity-60 cursor-not-allowed")}
+                                    disabled={posting || Math.abs(diff) > postingTolerance}
+                                    onClick={() => postDraft(d.header.id)}
+                                  >
+                                    <CheckCircle2 className="h-4 w-4" />
+                                  </button>
+                                  {/* Eliminar */}
+                                  <button
+                                    type="button"
+                                    title="Eliminar borrador"
+                                    aria-label="Eliminar"
+                                    className={iconBtnDanger}
+                                    onClick={() => deleteDraft(d.header.id)}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
+                                </>
                               )}
-                              onClick={() => toggleDetails(idx)}
-                              tabIndex={-1}
-                              title="Detalles"
-                            >
-                              {l.details_open ? "—" : "+"}
-                            </button>
-
-                            <button
-                              className={cls(
-                                "text-xs rounded border border-slate-200 px-2 py-1 hover:bg-white hover:text-rose-700",
-                                !canEdit ? "opacity-60 cursor-not-allowed" : ""
+                              {activeTab === "registered" && (
+                                <button
+                                  type="button"
+                                  title="Ver documento"
+                                  aria-label="Ver"
+                                  className={iconBtn}
+                                  onClick={() => {
+                                    const src  = (d.header as any).extra?.source;
+                                    const extr = (d.header as any).extra || {};
+                                    // Doc tributario FISCAL
+                                    if (
+                                      src === "trade_docs_sales"      ||
+                                      src === "docs-tribut-ventas"    ||
+                                      src === "trade_docs"            ||
+                                      src === "trade_doc_mass_import"
+                                    ) {
+                                      setTradeDocViewerId(extr.trade_doc_id || null);
+                                    // Otro doc de ingresos NON_FISCAL (distinto key en extra)
+                                    } else if (
+                                      src?.startsWith("trade_docs_non") ||
+                                      src === "otros-docs-ingresos"
+                                    ) {
+                                      setTradeDocViewerId(extr.other_doc_id || extr.trade_doc_id || null);
+                                    // Cobro / ajuste de cobro
+                                    } else if (
+                                      src === "cobros" ||
+                                      src?.startsWith("cobros_")
+                                    ) {
+                                      setCobroViewerId(extr.cobro_id || null);
+                                    // Manual, importado desde Excel u otro → modal de asiento
+                                    } else {
+                                      openEntryInModal(d.header.id, true);
+                                    }
+                                  }}
+                                >
+                                  <Eye className="h-4 w-4" />
+                                </button>
                               )}
-                              disabled={!canEdit}
-                              onClick={() => removeLine(idx)}
-                              tabIndex={-1}
-                              title="Eliminar fila"
-                            >
-                              ✕
-                            </button>
-                          </div>
-
-                          {reqCC || reqCU || reqBR || reqIT || reqCP ? (
-                            <div className="mt-0.5 text-[10px] text-slate-500 text-right pr-1">
-                              {reqCC ? "CC " : ""}
-                              {reqCU ? "CU " : ""}
-                              {reqBR ? "BR " : ""}
-                              {reqIT ? "IT " : ""}
-                              {reqCP ? "CP" : ""}
-                            </div>
-                          ) : null}
-                        </td>
-                      </tr>
-
-                      {l.details_open ? (
-                        <tr className="bg-slate-50">
-                          <td className={bodyCell} colSpan={8}>
-                            <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-2 p-2">
-                              <div>
-                                <div className="text-[11px] text-slate-600 font-medium">
-                                  Centro de costo {reqCC ? "*" : ""}
-                                </div>
-                                <div className="text-[10px] text-slate-500">
-                                  cost_center_code
-                                </div>
-                                <input
-                                  className={cls(
-                                    "w-full rounded border border-slate-200 bg-white px-2 py-1 text-sm",
-                                    l.cellErrors?.cost_center_code
-                                      ? "bg-rose-50/60"
-                                      : "",
-                                    reqCC ? "border-rose-300" : ""
-                                  )}
-                                  value={l.cost_center_code}
-                                  disabled={!canEdit}
-                                  onChange={(e) =>
-                                    updateLine(idx, {
-                                      cost_center_code: e.target.value,
-                                    })
-                                  }
-                                  onBlur={() =>
-                                    resolveTrimField(idx, "cost_center_code")
-                                  }
-                                  list="dl-cc"
-                                />
-                                <div className="text-[11px] text-slate-500 truncate">
-                                  {resolvedLabelForDim(
-                                    "cc",
-                                    l.cost_center_code
-                                  )}
-                                </div>
-                              </div>
-
-                              <div>
-                                <div className="text-[11px] text-slate-600 font-medium">
-                                  Línea de negocio {reqCU ? "*" : ""}
-                                </div>
-                                <div className="text-[10px] text-slate-500">
-                                  business_line_code
-                                </div>
-                                <input
-                                  className={cls(
-                                    "w-full rounded border border-slate-200 bg-white px-2 py-1 text-sm",
-                                    l.cellErrors?.business_line_code
-                                      ? "bg-rose-50/60"
-                                      : "",
-                                    reqCU ? "border-rose-300" : ""
-                                  )}
-                                  value={l.business_line_code}
-                                  disabled={!canEdit}
-                                  onChange={(e) =>
-                                    updateLine(idx, {
-                                      business_line_code: e.target.value,
-                                    })
-                                  }
-                                  onBlur={() =>
-                                    resolveTrimField(idx, "business_line_code")
-                                  }
-                                  list="dl-cu"
-                                />
-                                <div className="text-[11px] text-slate-500 truncate">
-                                  {resolvedLabelForDim(
-                                    "cu",
-                                    l.business_line_code
-                                  )}
-                                </div>
-                              </div>
-
-                              <div>
-                                <div className="text-[11px] text-slate-600 font-medium">
-                                  Sucursal {reqBR ? "*" : ""}
-                                </div>
-                                <div className="text-[10px] text-slate-500">
-                                  branch_code
-                                </div>
-                                <input
-                                  className={cls(
-                                    "w-full rounded border border-slate-200 bg-white px-2 py-1 text-sm",
-                                    l.cellErrors?.branch_code
-                                      ? "bg-rose-50/60"
-                                      : "",
-                                    reqBR ? "border-rose-300" : ""
-                                  )}
-                                  value={l.branch_code}
-                                  disabled={!canEdit}
-                                  onChange={(e) =>
-                                    updateLine(idx, {
-                                      branch_code: e.target.value,
-                                    })
-                                  }
-                                  onBlur={() =>
-                                    resolveTrimField(idx, "branch_code")
-                                  }
-                                  list="dl-br"
-                                />
-                                <div className="text-[11px] text-slate-500 truncate">
-                                  {resolvedLabelForDim("br", l.branch_code)}
-                                </div>
-                              </div>
-
-                              <div>
-                                <div className="text-[11px] text-slate-600 font-medium">
-                                  Ítem / Producto / Servicio {reqIT ? "*" : ""}
-                                </div>
-                                <div className="text-[10px] text-slate-500">
-                                  item_code (SKU)
-                                </div>
-                                <input
-                                  className={cls(
-                                    "w-full rounded border border-slate-200 bg-white px-2 py-1 text-sm",
-                                    l.cellErrors?.item_code
-                                      ? "bg-rose-50/60"
-                                      : "",
-                                    reqIT ? "border-rose-300" : ""
-                                  )}
-                                  value={l.item_code}
-                                  disabled={!canEdit}
-                                  onChange={(e) =>
-                                    updateLine(idx, { item_code: e.target.value })
-                                  }
-                                  onBlur={() => resolveTrimField(idx, "item_code")}
-                                  list="dl-it"
-                                  placeholder="Ej: V0547"
-                                />
-                                <div className="text-[11px] text-slate-500 truncate">
-                                  {resolvedLabelForDim("it", l.item_code)}
-                                </div>
-                              </div>
-
-                              <div>
-                                <div className="text-[11px] text-slate-600 font-medium">
-                                  Impuesto
-                                </div>
-                                <div className="text-[10px] text-slate-500">
-                                  tax_code
-                                </div>
-                                <input
-                                  className={cls(
-                                    "w-full rounded border border-slate-200 bg-white px-2 py-1 text-sm",
-                                    l.cellErrors?.tax_code ? "bg-rose-50/60" : ""
-                                  )}
-                                  value={l.tax_code}
-                                  disabled={!canEdit}
-                                  onChange={(e) =>
-                                    updateLine(idx, { tax_code: e.target.value })
-                                  }
-                                  onBlur={() => resolveTrimField(idx, "tax_code")}
-                                  list="dl-tax"
-                                  placeholder="Ej: IVA"
-                                />
-                                <div className="text-[11px] text-slate-500 truncate">
-                                  {l.tax_code.trim()
-                                    ? taxByCode[normalizeCode(l.tax_code)]?.name ||
-                                      "no existe"
-                                    : ""}
-                                </div>
-                              </div>
-
-                              <div>
-                                <div className="text-[11px] text-slate-600 font-medium">
-                                  Tasa (%)
-                                </div>
-                                <div className="text-[10px] text-slate-500">
-                                  tax_rate
-                                </div>
-                                <input
-                                  className={cls(
-                                    "w-full rounded border border-slate-200 bg-white px-2 py-1 text-sm",
-                                    l.cellErrors?.tax_rate ? "bg-rose-50/60" : ""
-                                  )}
-                                  value={l.tax_rate}
-                                  disabled={!canEdit}
-                                  onChange={(e) =>
-                                    updateLine(idx, { tax_rate: e.target.value })
-                                  }
-                                  onBlur={() => resolveTrimField(idx, "tax_rate")}
-                                  placeholder="Ej: 19"
-                                  inputMode="decimal"
-                                />
-                                <div className="text-[11px] text-slate-500 truncate">
-                                  {(() => {
-                                    const tx = normalizeCode(l.tax_code)
-                                      ? taxByCode[normalizeCode(l.tax_code)]
-                                      : null;
-                                    if (!tx) return "";
-                                    const rates = taxRatesByTax[tx.id] || [];
-                                    const match = rates.find(
-                                      (r) =>
-                                        Number(r.rate) ===
-                                        Number(
-                                          normalizeCode(l.tax_rate).replace(",", ".")
-                                        )
-                                    );
-                                    return match
-                                      ? "OK"
-                                      : l.tax_rate.trim()
-                                      ? "no existe"
-                                      : "—";
-                                  })()}
-                                </div>
-                              </div>
                             </div>
                           </td>
                         </tr>
-                      ) : null}
-                    </React.Fragment>
+
+                        {/* ── FILA EXPANDIDA ── */}
+                        {isExpanded && (
+                          <tr key={`${d.header.id}-exp`}>
+                            <td
+                              colSpan={11}
+                              className="border-t border-b border-[#123b63]/10 bg-[#f0f6fd] px-0"
+                            >
+                              <div className="px-6 py-4 space-y-4">
+
+                                {/* Tabla de líneas contables */}
+                                {dl.length > 0 ? (
+                                  <div>
+                                    <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#0b2b4f] mb-2">
+                                      Líneas del asiento
+                                    </div>
+                                    <div className="overflow-x-auto rounded-xl border border-[#123b63]/15 shadow-sm">
+                                      <table className="w-full text-xs border-collapse">
+                                        <thead className="bg-gradient-to-b from-[#eaf2fb] to-[#d6e4f5] border-b border-[#123b63]/20">
+                                          <tr>
+                                            {[
+                                              { label: "N°",              cls: "w-8  text-center" },
+                                              { label: "Cuenta",          cls: "text-left min-w-[180px]" },
+                                              { label: "RUT Contraparte", cls: "text-left min-w-[130px]" },
+                                              { label: "Glosa",           cls: "text-left min-w-[120px]" },
+                                              { label: "Debe",            cls: "text-right w-24" },
+                                              { label: "Haber",           cls: "text-right w-24" },
+                                            ].map(({ label, cls: c }) => (
+                                              <th
+                                                key={label}
+                                                className={cls(
+                                                  "px-2 py-2 font-extrabold text-[9px] uppercase tracking-[0.06em] text-[#0b2b4f]",
+                                                  c
+                                                )}
+                                              >
+                                                {label}
+                                              </th>
+                                            ))}
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {dl.map((x, li) => {
+                                            const acc    = x.account_node_id  ? accById[x.account_node_id]   : null;
+                                            const lineCp = x.counterparty_id
+                                              ? cpById[x.counterparty_id]
+                                              : (d.header.counterparty_id ? cpById[d.header.counterparty_id] : null);
+                                            const lineCC = x.cost_center_id   ? ccById[x.cost_center_id]     : null;
+                                            const lineCU = x.business_line_id ? cuById[x.business_line_id]   : null;
+                                            const lineBR = x.branch_id        ? brById[x.branch_id]          : null;
+                                            const pol    = acc?.id ? policiesByAccount[acc.id] : null;
+
+                                            // ── Segmentación ──────────────────────────────────────────
+                                            const segFilled: { label: string; value: string }[] = [];
+                                            const segMissing: string[] = [];
+                                            if (pol) {
+                                              if (pol.require_cc)  { lineCC ? segFilled.push({ label: "CC",    value: lineCC.name }) : segMissing.push("Centro de costo"); }
+                                              if (pol.require_cu)  { lineCU ? segFilled.push({ label: "UNeg",  value: lineCU.name }) : segMissing.push("Unidad de negocio"); }
+                                              if (pol.require_suc) { lineBR ? segFilled.push({ label: "Suc",   value: lineBR.name }) : segMissing.push("Sucursal"); }
+                                              if (pol.require_cp)  { lineCp ? segFilled.push({ label: "CP",    value: lineCp.name }) : segMissing.push("Contraparte"); }
+                                            }
+
+                                            const lineTd = "px-2 py-1.5 border-r last:border-r-0 border-slate-200/60 align-middle";
+                                            return (
+                                              <tr
+                                                key={x.line_no}
+                                                className={cls(
+                                                  "border-t border-slate-100 last:border-b-0",
+                                                  li % 2 === 0 ? "bg-white" : "bg-slate-50/60"
+                                                )}
+                                              >
+                                                {/* N° */}
+                                                <td className={cls(lineTd, "text-center text-slate-400 font-mono")}>{x.line_no}</td>
+
+                                                {/* Cuenta + segmentación */}
+                                                <td className={lineTd}>
+                                                  {acc ? (
+                                                    <div>
+                                                      <span>
+                                                        <b className="text-slate-800">{acc.code}</b>
+                                                        <span className="ml-1 text-slate-500">— {acc.name}</span>
+                                                      </span>
+                                                      {/* Chips de segmentación completada */}
+                                                      {segFilled.length > 0 && (
+                                                        <div className="flex flex-wrap gap-1 mt-1">
+                                                          {segFilled.map((s) => (
+                                                            <span
+                                                              key={s.label}
+                                                              className="inline-flex items-center gap-0.5 rounded-full border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[8px] font-semibold text-sky-700"
+                                                            >
+                                                              {s.label}:<span className="font-normal ml-0.5 truncate max-w-[80px]">{s.value}</span>
+                                                            </span>
+                                                          ))}
+                                                        </div>
+                                                      )}
+                                                      {/* Alertas de segmentación faltante */}
+                                                      {segMissing.length > 0 && (
+                                                        <div className="flex flex-wrap gap-1 mt-1">
+                                                          {segMissing.map((s) => (
+                                                            <span
+                                                              key={s}
+                                                              className="inline-flex items-center gap-0.5 rounded-full border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[8px] font-semibold text-amber-700"
+                                                              title={`Requerido: ${s}`}
+                                                            >
+                                                              ⚠ {s}
+                                                            </span>
+                                                          ))}
+                                                        </div>
+                                                      )}
+                                                    </div>
+                                                  ) : (
+                                                    <span className="text-slate-400">—</span>
+                                                  )}
+                                                </td>
+
+                                                {/* RUT Contraparte */}
+                                                <td className={cls(lineTd, "text-xs")}>
+                                                  {lineCp ? (
+                                                    <div>
+                                                      <span className="font-mono text-slate-700">{lineCp.identifier}</span>
+                                                      <div className="text-[9px] text-slate-400 mt-0.5 truncate max-w-[120px]">{lineCp.name}</div>
+                                                    </div>
+                                                  ) : (
+                                                    <span className="text-slate-300">—</span>
+                                                  )}
+                                                </td>
+
+                                                {/* Glosa */}
+                                                <td className={cls(lineTd, "text-slate-600")}>
+                                                  {x.line_description || "—"}
+                                                </td>
+
+                                                {/* Debe */}
+                                                <td className={cls(lineTd, "text-right font-mono font-semibold text-slate-800")}>
+                                                  {Number(x.debit || 0) > 0 ? formatNumber(Number(x.debit), moneyDecimals) : ""}
+                                                </td>
+
+                                                {/* Haber */}
+                                                <td className={cls(lineTd, "text-right font-mono font-semibold text-slate-800")}>
+                                                  {Number(x.credit || 0) > 0 ? formatNumber(Number(x.credit), moneyDecimals) : ""}
+                                                </td>
+                                              </tr>
+                                            );
+                                          })}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="text-xs text-slate-500 italic">Sin líneas con monto.</div>
+                                )}
+
+                                {/* Documento de origen */}
+                                {source && source !== "manual" && (
+                                  <div>
+                                    <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#0b2b4f] mb-2">
+                                      Documento de origen
+                                    </div>
+                                    {!Object.prototype.hasOwnProperty.call(sourceDocMap, d.header.id) ? (
+                                      <div className="text-xs text-slate-500">Cargando información del origen…</div>
+                                    ) : sourceDocMap[d.header.id] === null ? (
+                                      <div className="text-xs text-slate-500 italic">No se encontró el documento de origen.</div>
+                                    ) : (
+                                      <SourceDocCard
+                                        doc={sourceDocMap[d.header.id]}
+                                        source={source}
+                                        moneyDecimals={moneyDecimals}
+                                      />
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                  {/* ── Infinite scroll sentinel ── */}
+                  <tr
+                    ref={activeTab === "drafts" ? draftsSentinelRef : registeredSentinelRef}
+                  >
+                    <td colSpan={11} className="text-center py-3">
+                      {(activeTab === "drafts" ? loadingMoreDrafts : loadingMoreRegistered) && (
+                        <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+                          <svg className="animate-spin h-3 w-3 text-slate-400" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+                          </svg>
+                          Cargando más…
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                  </>
                   );
-                })}
+                })()}
               </tbody>
             </table>
           </div>
+          </div>
+          );
+        })()
+        }
         </div>
-
-        <div className="px-4 py-3 border-t bg-white flex flex-wrap items-center justify-between gap-2">
-          <div className="text-sm text-slate-700">
-            <b>debit:</b> {formatNumber(totals.debit, moneyDecimals)}{" "}
-            <span className="mx-2 text-slate-300">|</span>{" "}
-            <b>credit:</b> {formatNumber(totals.credit, moneyDecimals)}
           </div>
 
-          <div
-            className={cls(
-              "text-sm px-3 py-1 rounded-full",
-              Math.abs(totals.diff) <= postingTolerance
-                ? "bg-emerald-100 text-emerald-800"
-                : "bg-rose-100 text-rose-800"
-            )}
-          >
-            Diff: <b>{formatNumber(totals.diff, moneyDecimals)}</b>
+          <div className="mt-6 text-center text-[12px] text-slate-500">
+            ConciliaciónPro • Gestión Contable
           </div>
-        </div>
-      </div>
-
-      {/* =======================
-          BORRADORES (LISTA)
-         ======================= */}
-      <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
-        <div className="px-4 py-3 border-b flex items-center justify-between">
-          <div>
-            <h2 className="font-semibold text-slate-900">Borradores</h2>
-            <div className="text-[11px] text-slate-500">
-              Ver, editar, eliminar o contabilizar borradores guardados.
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50"
-              onClick={loadDrafts}
-            >
-              {loadingDrafts ? "Cargando..." : "Refrescar"}
-            </button>
-
-            <button
-              className={cls(
-                "rounded-lg border px-3 py-2 text-sm",
-                !canEdit || posting || loadingDrafts || drafts.length === 0
-                  ? "opacity-60 cursor-not-allowed"
-                  : "hover:bg-slate-50 hover:text-rose-700"
-              )}
-              disabled={!canEdit || posting || loadingDrafts || drafts.length === 0}
-              onClick={deleteAllDrafts}
-              title="Elimina todos los borradores"
-            >
-              Eliminar todos
-            </button>
-
-            <button
-              className={cls(
-                "rounded-lg px-3 py-2 text-sm text-white",
-                !canEdit || posting
-                  ? "bg-slate-400"
-                  : "bg-slate-900 hover:bg-slate-800"
-              )}
-              disabled={!canEdit || posting || loadingDrafts || drafts.length === 0}
-              onClick={postAllDrafts}
-              title="Contabiliza todos los borradores que cuadren (los demás se omiten)"
-            >
-              {posting ? "Contabilizando..." : "Contabilizar todos"}
-            </button>
-          </div>
-        </div>
-
-        <div className="overflow-auto">
-          {drafts.length === 0 ? (
-            <div className="p-4 text-sm text-slate-600">No hay borradores.</div>
-          ) : (
-            <div className="divide-y">
-              {drafts.map((d) => {
-                const dl = d.lines.filter(
-                  (x) => Number(x.debit || 0) > 0 || Number(x.credit || 0) > 0
-                );
-                const sumD = dl.reduce((s, x) => s + Number(x.debit || 0), 0);
-                const sumC = dl.reduce((s, x) => s + Number(x.credit || 0), 0);
-                const diff = sumD - sumC;
-
-                return (
-                  <div key={d.header.id} className="p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <div className="text-sm text-slate-900 font-semibold">
-                          {d.header.description || "—"}
-                        </div>
-                        <div className="text-xs text-slate-600 mt-0.5">
-                          <b>Fecha:</b> {d.header.entry_date}{" "}
-                          <span className="mx-2 text-slate-300">|</span>
-                          <b>Ref:</b> {d.header.reference || "—"}{" "}
-                          <span className="mx-2 text-slate-300">|</span>
-                          <b>ID:</b> {d.header.id.slice(0, 8)}…
-                        </div>
-                        <div className="text-xs mt-1">
-                          <span
-                            className={cls(
-                              "inline-flex items-center rounded-full px-2 py-0.5",
-                              Math.abs(diff) <= postingTolerance
-                                ? "bg-emerald-100 text-emerald-800"
-                                : "bg-rose-100 text-rose-800"
-                            )}
-                          >
-                            Diff:{" "}
-                            <b className="ml-1">
-                              {formatNumber(diff, moneyDecimals)}
-                            </b>
-                          </span>
-                          <span className="ml-2 text-slate-500">
-                            (debit {formatNumber(sumD, moneyDecimals)} / credit{" "}
-                            {formatNumber(sumC, moneyDecimals)})
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="flex gap-2">
-                        <button
-                          className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50"
-                          onClick={() => openDraft(d.header.id)}
-                        >
-                          Editar
-                        </button>
-
-                        <button
-                          className={cls(
-                            "rounded-lg border px-3 py-2 text-sm",
-                            !canEdit
-                              ? "opacity-60 cursor-not-allowed"
-                              : "hover:bg-slate-50 hover:text-rose-700"
-                          )}
-                          disabled={!canEdit}
-                          onClick={() => deleteDraft(d.header.id)}
-                        >
-                          Eliminar
-                        </button>
-
-                        <button
-                          className={cls(
-                            "rounded-lg px-3 py-2 text-sm text-white",
-                            !canEdit || posting
-                              ? "bg-slate-400"
-                              : "bg-slate-900 hover:bg-slate-800"
-                          )}
-                          disabled={!canEdit || posting}
-                          onClick={() => postDraft(d.header.id)}
-                          title="Contabiliza este borrador"
-                        >
-                          Contabilizar
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* líneas usadas */}
-                    {dl.length ? (
-                      <div className="mt-3 overflow-x-auto">
-                        <table className="w-full text-xs border-collapse">
-                          <thead>
-                            <tr className="bg-slate-50">
-                              <th className="border px-2 py-1 text-left">N°</th>
-                              <th className="border px-2 py-1 text-left">
-                                Cuenta
-                              </th>
-                              <th className="border px-2 py-1 text-left">
-                                Glosa
-                              </th>
-                              <th className="border px-2 py-1 text-right">
-                                Debe
-                              </th>
-                              <th className="border px-2 py-1 text-right">
-                                Haber
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {dl.slice(0, 8).map((x) => {
-                              const acc = x.account_node_id
-                                ? accById[x.account_node_id]
-                                : null;
-                              return (
-                                <tr key={String(x.line_no)} className="bg-white">
-                                  <td className="border px-2 py-1">
-                                    {x.line_no}
-                                  </td>
-                                  <td className="border px-2 py-1">
-                                    {acc ? (
-                                      <span>
-                                        <b>{acc.code}</b>{" "}
-                                        <span className="text-slate-500">
-                                          — {acc.name}
-                                        </span>
-                                      </span>
-                                    ) : (
-                                      <span className="text-slate-500">—</span>
-                                    )}
-                                  </td>
-                                  <td className="border px-2 py-1">
-                                    {x.line_description || "—"}
-                                  </td>
-                                  <td className="border px-2 py-1 text-right">
-                                    {formatNumber(
-                                      Number(x.debit || 0),
-                                      moneyDecimals
-                                    )}
-                                  </td>
-                                  <td className="border px-2 py-1 text-right">
-                                    {formatNumber(
-                                      Number(x.credit || 0),
-                                      moneyDecimals
-                                    )}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                        {dl.length > 8 ? (
-                          <div className="text-[11px] text-slate-500 mt-1">
-                            Mostrando 8 líneas (de {dl.length}).
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <div className="mt-3 text-xs text-slate-500">
-                        Sin líneas usadas.
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
       </div>
 
       {/* Modal crear tercero */}
-      {/* Modal crear tercero (reutilizable) */}
       <CounterpartyCreateModal
         open={cpModal.open}
         companyId={companyId}
         initialIdentifier={cpModal.identifier}
         onClose={() => setCpModal({ open: false, identifier: "" })}
         onCreated={onCounterpartyCreated}
+      />
+
+      {/* ── Modal de filtros ── */}
+      <AsientosFiltersModal
+        open={filtersOpen}
+        activeTab={activeTab}
+        onClose={() => setFiltersOpen(false)}
+        filters={filters}
+        onChange={setFilters}
+        onClear={() => setFilters(EMPTY_ASIENTOS_FILTERS)}
+        resultCount={
+          activeTab === "drafts" ? filteredDrafts.length : filteredRegistered.length
+        }
+      />
+
+      {/* ── Modal de importación Excel ── */}
+      <AsientosImportModal
+        open={importOpen}
+        canEdit={canEdit}
+        importState={importState}
+        issues={importModalIssues}
+        previewRows={importPreviewRows}
+        onClose={() => { setImportOpen(false); setImportState("idle"); }}
+        onConfirm={confirmImportFromModal}
+        onPickExcel={handlePickExcelForModal}
+      />
+
+      {/* ── Viewer: Doc Tributario / Otro Ingreso ── */}
+      <TradeDocViewerModal
+        open={!!tradeDocViewerId}
+        onClose={() => setTradeDocViewerId(null)}
+        tradeDocId={tradeDocViewerId}
+        companyId={companyId || null}
+      />
+
+      {/* ── Viewer: Cobro / Ajuste ── */}
+      <CobroViewerModal
+        open={!!cobroViewerId}
+        onClose={() => setCobroViewerId(null)}
+        cobroId={cobroViewerId}
+        companyId={companyId || null}
       />
     </div>
   );

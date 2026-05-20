@@ -172,25 +172,6 @@ function TableTd({
   );
 }
 
-function ExpandedRow({
-  content,
-}: {
-  content?: React.ReactNode;
-}) {
-  return (
-    <div className="w-full bg-slate-50/70 px-3 py-3">
-      <div className="overflow-hidden rounded-xl bg-white/95 shadow-sm ring-1 ring-slate-200/70">
-        <div className="px-3 py-3">
-          {content || (
-            <div className="text-[12px] text-slate-500">
-              Aquí irá el detalle expandido.
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 const iconBtn =
   "inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50";
@@ -365,14 +346,14 @@ export default function TradeDocsTable({
             <col style={{ width: "5%" }} />
             <col style={{ width: "8%" }} />
             <col style={{ width: "10%" }} />
-            <col style={{ width: "18%" }} />
+            <col style={{ width: "20%" }} />
             <col style={{ width: "8%" }} />
             <col style={{ width: "8%" }} />
             <col style={{ width: "8%" }} />
             <col style={{ width: "9%" }} />
             <col style={{ width: "9%" }} />
             <col style={{ width: "8%" }} />
-            <col style={{ width: "10%" }} />
+            <col style={{ width: "8%" }} />
           </colgroup>
 
           <thead
@@ -732,7 +713,7 @@ export default function TradeDocsTable({
                     {expanded && (
                       <tr className="border-t bg-white">
                         <td colSpan={13} className="p-0">
-                          <ExpandedRow content={renderExpandedContent?.(row)} />
+                          {renderExpandedContent?.(row)}
                         </td>
                       </tr>
                     )}

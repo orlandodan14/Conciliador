@@ -7,7 +7,7 @@ import { tradeDocsTheme } from "@/app/(workspace)/gestionVentas/docs-tribut-vent
 
 type Props = {
   open: boolean;
-  activeTab: "drafts" | "registered";
+  activeTab: string;
   filters: OtherDocListFilters;
   setFilters: React.Dispatch<React.SetStateAction<OtherDocListFilters>>;
   onClose: () => void;
@@ -134,6 +134,7 @@ export default function OtherDocsFiltersModal({
           >
             <option value="">Todos</option>
             <option value="OTRO_INGRESO">Otro Ingreso</option>
+            <option value="CUSTOMER_ADVANCE">Anticipo de cliente</option>
             <option value="DEVOLUCION">Devolución</option>
           </select>
         </div>
@@ -158,7 +159,7 @@ export default function OtherDocsFiltersModal({
           />
         </div>
 
-        <div className="md:col-span-3">
+        <div className="md:col-span-2">
           <label className="mb-1 block text-xs font-medium text-slate-600">Nombre</label>
           <input
             className={inputCls}
@@ -168,11 +169,31 @@ export default function OtherDocsFiltersModal({
           />
         </div>
 
-        <div className="md:col-span-2 xl:col-span-4">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-slate-600">Situación</label>
+          <select
+            className={inputCls}
+            value={filters.payment_state}
+            onChange={(e) => setFilters((f) => ({ ...f, payment_state: e.target.value }))}
+          >
+            <option value="">Todas</option>
+            <option value="PENDIENTE">Pendiente</option>
+            <option value="PAGADO">Pagado</option>
+            <option value="SALDO_A_FAVOR">Saldo a favor</option>
+            <option value="CANCELADO">Cancelado</option>
+          </select>
+        </div>
+
+        <div className="md:col-span-2 xl:col-span-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
           <NumericFilterBlock
             label="Monto"
             value={filters.amount_filter}
             onChange={(next) => setFilters((f) => ({ ...f, amount_filter: next }))}
+          />
+          <NumericFilterBlock
+            label="Saldo"
+            value={filters.balance_filter}
+            onChange={(next) => setFilters((f) => ({ ...f, balance_filter: next }))}
           />
         </div>
       </div>

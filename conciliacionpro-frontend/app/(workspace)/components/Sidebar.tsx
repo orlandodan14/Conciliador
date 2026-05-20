@@ -29,9 +29,8 @@ export default function Sidebar({ collapsed, onToggle }: Props) {
       {
         title: "Gestión Bancaria",
         items: [
-          { type: "link", label: "Bancos", href: "/gestionBancaria/bancos" },
-          { type: "link", label: "Conciliación Bancaria", href: "/gestionBancaria/conciliacion" },
-          { type: "link", label: "Cartolas / Movimientos", href: "/gestionBancaria/movimientos" },
+          { type: "link", label: "Bancos / Cuentas", href: "/gestionBancaria/bancos" },
+          { type: "link", label: "Movimientos Bancarios", href: "/gestionBancaria/movimientos" },
         ],
       },
       {
@@ -40,7 +39,7 @@ export default function Sidebar({ collapsed, onToggle }: Props) {
           { type: "link", label: "Clientes", href: "/gestionVentas/clientes" },
           { type: "link", label: "Doc. Tributarios Ventas", href: "/gestionVentas/docs-tribut-ventas" },
           { type: "link", label: "Otros Docs. Ingresos", href: "/gestionVentas/otros-docs-ingresos" },
-          { type: "link", label: "Cobros", href: "/gestionVentas/cobranza" },
+          { type: "link", label: "Cobros", href: "/gestionVentas/cobros" },
         ],
       },
       {
